@@ -34,12 +34,12 @@ Navigate your todos with vim-style keybindings. Toggle status, delete, and manag
 ### Focus Mode
 See what matters right now. Filter todos by current git branch and prioritize your work.
 
-![Focus Mode](docs/images/focus-mode.png)
+![Focus Mode](docs/images/todo-focus.png)
 
 ### Web UI
-Beautiful dark-themed dashboard with real-time updates. Add, edit, and manage todos from your browser.
+Terminal-inspired dark theme with light mode toggle. Add, edit, and manage todos from your browser.
 
-![Web UI](docs/images/web-ui.png)
+![Web UI](docs/images/todo-ui.png)
 
 ## Installation
 
