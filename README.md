@@ -1,51 +1,56 @@
 # Todo CLI
 
-A project-embedded interactive todo system for developers. Todos that live with your code.
+<p align="center">
+  <strong>🗂️ Project-embedded interactive todo system for developers</strong><br>
+  <em>Todos that understand your code</em>
+</p>
 
-## Features
+<p align="center">
+  <a href="#installation">Installation</a> •
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#commands">Commands</a> •
+  <a href="#web-ui">Web UI</a>
+</p>
 
-- **Project-local storage** - Todos stored in `.todos/` directory within your project
-- **Context-aware** - Attach todos to file paths, folders, or patterns
-- **Git integration** - Automatically captures branch and commit context
-- **Interactive CLI** - Navigate, toggle, and delete todos with keyboard shortcuts
-- **Web UI** - Optional modern dark-themed web interface
-- **Orphan detection** - Find todos linked to non-existent files
+---
+
+## ✨ Features
+
+- **📁 Project-local storage** - Todos stored in `.todos/` directory within your project
+- **🎯 Context-aware** - Attach todos to file paths, folders, or patterns
+- **🔀 Git integration** - Automatically captures branch and commit context
+- **⌨️ Interactive CLI** - Navigate, toggle, and delete todos with keyboard shortcuts
+- **🌐 Web UI** - Optional modern dark-themed web interface
+- **🔍 Orphan detection** - Find todos linked to non-existent files
+- **🏥 Health checks** - Doctor command to maintain todo hygiene
+
+## 📸 Screenshots
+
+### Interactive Todo List
+Navigate your todos with vim-style keybindings. Toggle status, delete, and manage todos without leaving your terminal.
+
+![Todo List](docs/images/todo-list.png)
+
+### Focus Mode
+See what matters right now. Filter todos by current git branch and prioritize your work.
+
+![Focus Mode](docs/images/focus-mode.png)
+
+### Web UI
+Beautiful dark-themed dashboard with real-time updates. Add, edit, and manage todos from your browser.
+
+![Web UI](docs/images/web-ui.png)
 
 ## Installation
 
-### Using Go Install (Recommended)
-
 ```bash
-go install github.com/bagadi-alnour/todo-cli/cmd/todo@latest
+brew install bagadi-alnour/tap/todo
 ```
-
-This will install the `todo` binary to your `$GOPATH/bin` (usually `~/go/bin`).
-
-### From Source
-
-```bash
-# Clone the repository
-git clone https://github.com/bagadi-alnour/todo-cli.git
-cd todo-cli
-
-# Build
-make build
-
-# Install to ~/bin
-make install
-
-# Or install globally (requires sudo)
-make install-global
-```
-
-### Pre-built Binaries
-
-Download from the [releases page](https://github.com/bagadi-alnour/todo-cli/releases).
 
 ## Quick Start
 
 ```bash
-# Initialize a todo project in your current directory
+# Initialize a todo project
 todo init
 
 # Add your first todo
@@ -59,6 +64,9 @@ todo list
 
 # Mark a todo as done
 todo done 1
+
+# Start web UI
+todo ui
 ```
 
 ## Commands
@@ -93,13 +101,16 @@ todo list --path src/     # Filter by path
 ```
 
 **Keyboard Shortcuts:**
-- `↑`/`↓` or `j`/`k` - Navigate
-- `Space` or `Enter` - Toggle status
-- `d` or `x` - Delete todo
-- `g` - Jump to top
-- `G` - Jump to bottom
-- `?` - Show help
-- `q` - Quit
+
+| Key | Action |
+|-----|--------|
+| `↑`/`↓` or `j`/`k` | Navigate up/down |
+| `Space` or `Enter` | Toggle status |
+| `d` or `x` | Delete todo |
+| `g` | Jump to top |
+| `G` | Jump to bottom |
+| `?` | Show help |
+| `q` | Quit |
 
 ### `todo done`
 Mark a todo as complete.
@@ -125,11 +136,11 @@ todo doctor        # Check for issues
 todo doctor --fix  # Auto-fix where possible
 ```
 
-**Checks:**
-- Orphaned paths (todos pointing to deleted files)
-- Empty todos
-- Duplicate todos
-- Stale todos (open > 30 days)
+**Health Checks:**
+- 🔍 Orphaned paths (todos pointing to deleted files)
+- ⚠️ Empty todos
+- 🔄 Duplicate todos
+- ⏰ Stale todos (open > 30 days)
 
 ### `todo ui`
 Start the web interface.
@@ -138,6 +149,18 @@ Start the web interface.
 todo ui              # Start on port 8080
 todo ui --port 3000  # Custom port
 ```
+
+## Web UI
+
+The web UI provides a modern, keyboard-friendly interface for managing todos:
+
+- **Dashboard** with status overview
+- **Quick add** form with path support
+- **Filter** by status (All, Open, Done, Blocked, Waiting, Tech Debt)
+- **Keyboard shortcuts** for power users
+- **Real-time updates** - changes sync immediately
+
+Access at `http://localhost:8080` after running `todo ui`.
 
 ## Storage Format
 
@@ -158,9 +181,6 @@ Todos are stored in `.todos/todos.json`:
         "paths": ["src/auth/"],
         "branch": "feature/auth-refactor",
         "commit": "abc1234"
-      },
-      "meta": {
-        "source": "cli"
       }
     }
   ]
@@ -169,21 +189,23 @@ Todos are stored in `.todos/todos.json`:
 
 ## Status Types
 
-| Status | Description |
-|--------|-------------|
-| `open` | Active, needs to be done |
-| `done` | Completed |
-| `blocked` | Waiting on external dependency |
-| `waiting` | Paused, will resume later |
-| `tech-debt` | Known technical debt to address |
+| Status | Icon | Description |
+|--------|------|-------------|
+| `open` | ○ | Active, needs to be done |
+| `done` | ✓ | Completed |
+| `blocked` | ⊘ | Waiting on external dependency |
+| `waiting` | ◷ | Paused, will resume later |
+| `tech-debt` | △ | Known technical debt to address |
 
 ## Philosophy
 
-1. **The tool is global. The data is local.** - Install once, use everywhere.
-2. **Todos should live with the code.** - Context matters.
-3. **CLI-first.** - Fast and keyboard-driven.
-4. **Human-readable storage.** - Easy to inspect and edit manually.
-5. **Git-aware.** - Understand your development workflow.
+> **The tool is global. The data is local.**
+
+1. 🌍 **Install once, use everywhere** - Single binary, works in any project
+2. 📁 **Todos live with the code** - Context matters, todos travel with your repo
+3. ⌨️ **CLI-first** - Fast, keyboard-driven, scriptable
+4. 👁️ **Human-readable** - JSON storage, easy to inspect and edit
+5. 🔀 **Git-aware** - Understands your development workflow
 
 ## Configuration
 
@@ -197,25 +219,44 @@ Configuration is stored in `.todos/config.json`:
 }
 ```
 
+## Git Integration
+
+Todo CLI automatically captures git context when adding todos:
+
+- **Branch name** - What feature/fix you're working on
+- **Commit hash** - Point-in-time reference
+
+Use `todo focus` to see todos relevant to your current branch.
+
 ## Development
 
 ```bash
+# Build
+make build
+
 # Run tests
 make test
 
-# Run with coverage
-make test-coverage
+# Install locally
+make install
 
 # Format code
 make fmt
 
 # Run linter
 make lint
-
-# Development mode with hot reload
-make dev
 ```
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-MIT
+MIT License - see [LICENSE](LICENSE) for details.
+
+---
+
+<p align="center">
+  Made with ❤️ for developers who like their todos close to their code
+</p>
