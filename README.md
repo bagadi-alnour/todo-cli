@@ -9,7 +9,7 @@
   <a href="#installation">Installation</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="#commands">Commands</a> •
-  <a href="#web-ui">Web UI</a>
+  <a href="#ui">Web UI</a>
 </p>
 
 ---
