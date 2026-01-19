@@ -39,7 +39,7 @@ See what matters right now. Filter todos by current git branch and prioritize yo
 ### Web UI
 Terminal-inspired dark theme with light mode toggle. Add, edit, and manage todos from your browser.
 
-![Web UI](docs/images/todo-ui.png)
+![Web UI](docs/images/ui.png)
 
 ## Installation
 
