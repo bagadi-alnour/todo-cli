@@ -1,6 +1,6 @@
 # Binaries
 todo-cli
-todo
+/todo
 todo-*
 *.exe
 
