@@ -3,10 +3,10 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/spf13/cobra"
 	"github.com/bagadi-alnour/todo-cli/internal/storage"
 	"github.com/bagadi-alnour/todo-cli/internal/terminal"
 	"github.com/bagadi-alnour/todo-cli/internal/types"
+	"github.com/spf13/cobra"
 )
 
 var doneCmd = &cobra.Command{

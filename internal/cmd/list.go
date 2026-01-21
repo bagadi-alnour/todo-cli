@@ -4,16 +4,17 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/spf13/cobra"
 	"github.com/bagadi-alnour/todo-cli/internal/storage"
 	"github.com/bagadi-alnour/todo-cli/internal/terminal"
 	"github.com/bagadi-alnour/todo-cli/internal/types"
+	"github.com/spf13/cobra"
 )
 
 var (
-	listStatic bool
-	listStatus string
-	listPath   string
+	listStatic   bool
+	listStatus   string
+	listPath     string
+	listPriority string
 )
 
 var listCmd = &cobra.Command{
@@ -43,6 +44,7 @@ func init() {
 	listCmd.Flags().BoolVar(&listStatic, "static", false, "Non-interactive output")
 	listCmd.Flags().StringVarP(&listStatus, "status", "s", "", "Filter by status: open, done, blocked, waiting, tech-debt")
 	listCmd.Flags().StringVarP(&listPath, "path", "p", "", "Filter by path prefix")
+	listCmd.Flags().StringVar(&listPriority, "priority", "", "Filter by priority: low, medium, high")
 }
 
 func runList(cmd *cobra.Command, args []string) error {
@@ -70,6 +72,16 @@ func runList(cmd *cobra.Command, args []string) error {
 	if listPath != "" {
 		todos = storage.FilterTodosByPath(todos, listPath)
 	}
+
+	if listPriority != "" {
+		p := types.Priority(strings.ToLower(listPriority))
+		if !p.IsValid() {
+			return fmt.Errorf("invalid priority: %s. Use: low, medium, high", listPriority)
+		}
+		todos = storage.FilterTodosByPriority(todos, p)
+	}
+
+	storage.SortTodosByPriority(todos)
 
 	if len(todos) == 0 {
 		terminal.PrintInfo("No todos found")
@@ -193,6 +205,7 @@ func displayInteractiveTodos(todos []types.Todo, selectedIndex int) {
 		isSelected := i == selectedIndex
 		var line string
 
+		priorityLabel, priorityColor := priorityVisual(todo.Priority)
 		if isSelected {
 			line = fmt.Sprintf("  %s%s▸ ", terminal.Bold, terminal.BrightCyan)
 		} else {
@@ -211,6 +224,8 @@ func displayInteractiveTodos(todos []types.Todo, selectedIndex int) {
 				line += fmt.Sprintf("%s%s %s", statusColor, checkbox, terminal.Reset)
 			}
 		}
+
+		line += fmt.Sprintf("%s%s%s ", priorityColor, priorityLabel, terminal.Reset)
 
 		text := terminal.Truncate(todo.Text, 50)
 		line += text + terminal.Reset
@@ -314,15 +329,17 @@ func displayStaticList(todos []types.Todo) error {
 	for i, todo := range todos {
 		statusColor := terminal.StatusColor(string(todo.Status))
 		checkbox := terminal.StatusIcon(string(todo.Status))
+		priorityLabel, priorityColor := priorityVisual(todo.Priority)
 
 		textStyle := ""
 		if todo.Status == types.StatusDone {
 			textStyle = terminal.Dim
 		}
 
-		fmt.Printf("  %s%d.%s %s%s%s %s%s%s\n",
+		fmt.Printf("  %s%d.%s %s%s%s %s%s%s %s%s%s\n",
 			terminal.Dim, i+1, terminal.Reset,
 			statusColor, checkbox, terminal.Reset,
+			priorityColor, priorityLabel, terminal.Reset,
 			textStyle, todo.Text, terminal.Reset)
 
 		if len(todo.Context.Paths) > 0 {
@@ -355,4 +372,22 @@ func countByStatus(todos []types.Todo) map[string]int {
 		counts[string(t.Status)]++
 	}
 	return counts
+}
+
+func normalizePriority(p types.Priority) types.Priority {
+	if p.IsValid() {
+		return p
+	}
+	return types.PriorityMedium
+}
+
+func priorityVisual(p types.Priority) (string, string) {
+	switch normalizePriority(p) {
+	case types.PriorityHigh:
+		return "[H]", terminal.BrightRed
+	case types.PriorityLow:
+		return "[L]", terminal.Dim
+	default:
+		return "[M]", terminal.Yellow
+	}
 }

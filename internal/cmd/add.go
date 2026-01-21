@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/spf13/cobra"
 	"github.com/bagadi-alnour/todo-cli/internal/git"
 	"github.com/bagadi-alnour/todo-cli/internal/storage"
 	"github.com/bagadi-alnour/todo-cli/internal/terminal"
 	"github.com/bagadi-alnour/todo-cli/internal/types"
+	"github.com/spf13/cobra"
 )
 
 var (
@@ -48,6 +48,12 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Load config
+	config, err := storage.LoadConfig(projectRoot)
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
 	// Join all args as the todo text
 	text := strings.Join(args, " ")
 	if strings.TrimSpace(text) == "" {
@@ -82,11 +88,13 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	// Capture git context unless disabled
-	if !addNoGit && git.IsGitRepo() {
+	if !addNoGit && config.AutoGit && git.IsGitRepo() {
 		branch, commit, err := git.GetGitContext()
 		if err == nil && branch != "" {
 			todo.SetGitContext(branch, commit)
 		}
+	} else if !addNoGit && config.AutoGit && config.DefaultBranch != "" {
+		todo.SetGitContext(config.DefaultBranch, "")
 	}
 
 	// Add to todos

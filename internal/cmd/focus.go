@@ -5,15 +5,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/spf13/cobra"
 	"github.com/bagadi-alnour/todo-cli/internal/git"
 	"github.com/bagadi-alnour/todo-cli/internal/storage"
 	"github.com/bagadi-alnour/todo-cli/internal/terminal"
 	"github.com/bagadi-alnour/todo-cli/internal/types"
+	"github.com/spf13/cobra"
 )
 
 var (
-	focusAll bool
+	focusAll      bool
+	focusPriority string
 )
 
 var focusCmd = &cobra.Command{
@@ -32,6 +33,7 @@ func init() {
 	rootCmd.AddCommand(focusCmd)
 
 	focusCmd.Flags().BoolVarP(&focusAll, "all", "a", false, "Show all open todos, not just branch-relevant")
+	focusCmd.Flags().StringVar(&focusPriority, "priority", "", "Filter by priority: low, medium, high")
 }
 
 func runFocus(cmd *cobra.Command, args []string) error {
@@ -39,6 +41,12 @@ func runFocus(cmd *cobra.Command, args []string) error {
 	projectRoot, err := storage.FindProjectRoot(".")
 	if err != nil {
 		return err
+	}
+
+	// Load config
+	config, err := storage.LoadConfig(projectRoot)
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
 	}
 
 	// Load todos
@@ -55,10 +63,20 @@ func runFocus(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	if focusPriority != "" {
+		p := types.Priority(strings.ToLower(focusPriority))
+		if !p.IsValid() {
+			return fmt.Errorf("invalid priority: %s. Use: low, medium, high", focusPriority)
+		}
+		openTodos = storage.FilterTodosByPriority(openTodos, p)
+	}
+
 	// Get current branch for filtering
 	currentBranch := ""
-	if !focusAll && git.IsGitRepo() {
+	if !focusAll && config.AutoGit && git.IsGitRepo() {
 		currentBranch, _ = git.GetCurrentBranch()
+	} else if !focusAll && config.AutoGit && currentBranch == "" && config.DefaultBranch != "" {
+		currentBranch = config.DefaultBranch
 	}
 
 	// Filter by branch if applicable
@@ -79,6 +97,8 @@ func runFocus(cmd *cobra.Command, args []string) error {
 	} else {
 		focusedTodos = openTodos
 	}
+
+	storage.SortTodosByPriority(focusedTodos)
 
 	// Count stats
 	blockedCount := 0
@@ -135,7 +155,7 @@ func runFocus(cmd *cobra.Command, args []string) error {
 			textStyle = ""
 		}
 
-		fmt.Printf("%s%s%s%s\n", prefix, textStyle, todo.Text, terminal.Reset)
+		fmt.Printf("%s%s%s %s\n", prefix, textStyle, todo.Text, focusPriorityBadge(todo.Priority))
 
 		// Context paths
 		if len(todo.Context.Paths) > 0 {
@@ -191,4 +211,22 @@ func formatTimeAgo(t time.Time) string {
 	default:
 		return t.Format("Jan 2, 2006")
 	}
+}
+
+func focusPriorityBadge(p types.Priority) string {
+	switch normalizeFocusPriority(p) {
+	case types.PriorityHigh:
+		return terminal.BrightRed + "[high]" + terminal.Reset
+	case types.PriorityLow:
+		return terminal.Dim + "[low]" + terminal.Reset
+	default:
+		return terminal.Yellow + "[med]" + terminal.Reset
+	}
+}
+
+func normalizeFocusPriority(p types.Priority) types.Priority {
+	if p.IsValid() {
+		return p
+	}
+	return types.PriorityMedium
 }

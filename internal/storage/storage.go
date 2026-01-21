@@ -6,14 +6,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/bagadi-alnour/todo-cli/internal/types"
 )
 
 const (
-	TodosDir     = ".todos"
-	TodosFile    = "todos.json"
-	ConfigFile   = "config.json"
+	TodosDir   = ".todos"
+	TodosFile  = "todos.json"
+	ConfigFile = "config.json"
 )
 
 // GenerateID creates a unique ID for a new todo
@@ -128,9 +129,11 @@ func LoadTodos(projectRoot string) ([]types.Todo, error) {
 		if err := json.Unmarshal(data, &todos); err != nil {
 			return nil, fmt.Errorf("failed to parse todos file: %w", err)
 		}
+		normalizeTodos(todos)
 		return todos, nil
 	}
 
+	normalizeTodos(todoFile.Todos)
 	return todoFile.Todos, nil
 }
 
@@ -276,4 +279,35 @@ func FilterTodosByBranch(todos []types.Todo, branch string) []types.Todo {
 		}
 	}
 	return filtered
+}
+
+// FilterTodosByPriority filters todos by priority
+func FilterTodosByPriority(todos []types.Todo, priority types.Priority) []types.Todo {
+	var filtered []types.Todo
+	for _, t := range todos {
+		if t.Priority == priority {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
+}
+
+// SortTodosByPriority sorts todos in-place with highest priority first, then by creation time
+func SortTodosByPriority(todos []types.Todo) {
+	sort.SliceStable(todos, func(i, j int) bool {
+		left := todos[i].Priority.PriorityWeight()
+		right := todos[j].Priority.PriorityWeight()
+		if left == right {
+			return todos[i].CreatedAt.Before(todos[j].CreatedAt)
+		}
+		return left > right
+	})
+}
+
+func normalizeTodos(todos []types.Todo) {
+	for i := range todos {
+		if !todos[i].Priority.IsValid() {
+			todos[i].Priority = types.PriorityMedium
+		}
+	}
 }

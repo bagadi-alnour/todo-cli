@@ -3,8 +3,8 @@ package terminal
 import (
 	"fmt"
 	"os"
-	"os/exec"
-	"strings"
+
+	"golang.org/x/term"
 )
 
 // ANSI color and style codes
@@ -47,37 +47,25 @@ const (
 
 // TermState holds the terminal state for raw mode
 type TermState struct {
-	oldState string
+	fd       int
+	oldState *term.State
 }
 
 // MakeRaw sets terminal to raw mode and returns the old state
 func MakeRaw() (*TermState, error) {
-	// Get current terminal settings
-	cmd := exec.Command("stty", "-g")
-	cmd.Stdin = os.Stdin
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, err
-	}
-	oldState := strings.TrimSpace(string(out))
-
-	// Set raw mode with proper settings
-	cmd = exec.Command("stty", "-echo", "-icanon", "min", "1", "time", "0")
-	cmd.Stdin = os.Stdin
-	err = cmd.Run()
+	fd := int(os.Stdin.Fd())
+	oldState, err := term.MakeRaw(fd)
 	if err != nil {
 		return nil, err
 	}
 
-	return &TermState{oldState: oldState}, nil
+	return &TermState{fd: fd, oldState: oldState}, nil
 }
 
 // Restore restores terminal to previous state
 func (t *TermState) Restore() {
-	if t != nil && t.oldState != "" {
-		cmd := exec.Command("stty", t.oldState)
-		cmd.Stdin = os.Stdin
-		cmd.Run()
+	if t != nil && t.oldState != nil {
+		_ = term.Restore(t.fd, t.oldState)
 	}
 }
 

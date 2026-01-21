@@ -4,13 +4,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
-	"github.com/spf13/cobra"
 	"github.com/bagadi-alnour/todo-cli/internal/git"
 	"github.com/bagadi-alnour/todo-cli/internal/storage"
 	"github.com/bagadi-alnour/todo-cli/internal/terminal"
 	"github.com/bagadi-alnour/todo-cli/internal/types"
+	"github.com/spf13/cobra"
 )
 
 var (
@@ -120,6 +121,34 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 
 	fmt.Println()
 
+	if doctorFix {
+		fmt.Printf("  %s🔧 Applying fixes...%s\n", terminal.Dim, terminal.Reset)
+		todos, fixes := applyDoctorFixes(todos, projectRoot)
+
+		if fixes.hasChanges() {
+			modified = true
+			if fixes.removedOrphanedPaths > 0 {
+				fmt.Printf("     %s• removed %d invalid path(s)%s\n", terminal.Green, fixes.removedOrphanedPaths, terminal.Reset)
+			}
+			if fixes.removedEmpty > 0 {
+				fmt.Printf("     %s• removed %d empty todo(s)%s\n", terminal.Green, fixes.removedEmpty, terminal.Reset)
+			}
+			if fixes.removedDuplicates > 0 {
+				fmt.Printf("     %s• removed %d duplicate todo(s)%s\n", terminal.Green, fixes.removedDuplicates, terminal.Reset)
+			}
+		} else {
+			fmt.Printf("     %sNo changes needed%s\n", terminal.Green, terminal.Reset)
+		}
+		fmt.Println()
+
+		// Re-run checks after fixes so the summary reflects the latest state
+		orphanedTodos, orphanedPaths, totalPaths = checkOrphanedPaths(todos, projectRoot)
+		emptyTodos = checkEmptyTodos(todos)
+		duplicates = checkDuplicateTodos(todos)
+		staleTodos = checkStaleTodos(todos)
+		issues = len(orphanedTodos) + len(emptyTodos) + len(duplicates) + len(staleTodos)
+	}
+
 	// Summary
 	fmt.Printf("  %s%s─── SUMMARY ───%s\n\n", terminal.BrightCyan, terminal.Dim, terminal.Reset)
 
@@ -218,7 +247,7 @@ func checkOrphanedPaths(todos []types.Todo, projectRoot string) ([]types.Todo, i
 func checkEmptyTodos(todos []types.Todo) []types.Todo {
 	var empty []types.Todo
 	for _, todo := range todos {
-		if len(todo.Text) == 0 {
+		if strings.TrimSpace(todo.Text) == "" {
 			empty = append(empty, todo)
 		}
 	}
@@ -230,10 +259,11 @@ func checkDuplicateTodos(todos []types.Todo) []types.Todo {
 	var duplicates []types.Todo
 
 	for _, todo := range todos {
-		if seen[todo.Text] {
+		key := strings.TrimSpace(todo.Text)
+		if seen[key] {
 			duplicates = append(duplicates, todo)
 		}
-		seen[todo.Text] = true
+		seen[key] = true
 	}
 
 	return duplicates
@@ -270,4 +300,55 @@ func countTodoStats(todos []types.Todo) map[string]int {
 	}
 
 	return stats
+}
+
+type doctorFixReport struct {
+	removedOrphanedPaths int
+	removedEmpty         int
+	removedDuplicates    int
+}
+
+func (r doctorFixReport) hasChanges() bool {
+	return r.removedOrphanedPaths > 0 || r.removedEmpty > 0 || r.removedDuplicates > 0
+}
+
+func applyDoctorFixes(todos []types.Todo, projectRoot string) ([]types.Todo, doctorFixReport) {
+	var cleaned []types.Todo
+	fixes := doctorFixReport{}
+	seenText := make(map[string]bool)
+	now := time.Now()
+
+	for _, todo := range todos {
+		text := strings.TrimSpace(todo.Text)
+		if text == "" {
+			fixes.removedEmpty++
+			continue
+		}
+
+		if seenText[text] {
+			fixes.removedDuplicates++
+			continue
+		}
+		seenText[text] = true
+
+		if len(todo.Context.Paths) > 0 {
+			validPaths := []string{}
+			for _, path := range todo.Context.Paths {
+				absPath := filepath.Join(projectRoot, path)
+				if _, err := os.Stat(absPath); err == nil {
+					validPaths = append(validPaths, path)
+				} else {
+					fixes.removedOrphanedPaths++
+				}
+			}
+			if len(validPaths) != len(todo.Context.Paths) {
+				todo.Context.Paths = validPaths
+				todo.UpdatedAt = now
+			}
+		}
+
+		cleaned = append(cleaned, todo)
+	}
+
+	return cleaned, fixes
 }

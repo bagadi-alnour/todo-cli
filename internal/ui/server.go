@@ -141,8 +141,9 @@ func (s *Server) listTodos(w http.ResponseWriter, r *http.Request) {
 // createTodo creates a new todo
 func (s *Server) createTodo(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Text string  `json:"text"`
-		Path *string `json:"path"`
+		Text     string  `json:"text"`
+		Path     *string `json:"path"`
+		Priority string  `json:"priority"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -152,6 +153,12 @@ func (s *Server) createTodo(w http.ResponseWriter, r *http.Request) {
 
 	if strings.TrimSpace(req.Text) == "" {
 		json.NewEncoder(w).Encode(map[string]string{"error": "Todo text is required"})
+		return
+	}
+
+	priority := types.Priority(strings.ToLower(req.Priority))
+	if req.Priority != "" && !priority.IsValid() {
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid priority"})
 		return
 	}
 
@@ -170,6 +177,9 @@ func (s *Server) createTodo(w http.ResponseWriter, r *http.Request) {
 	todo := types.NewTodo(id, strings.TrimSpace(req.Text))
 	if req.Path != nil && *req.Path != "" {
 		todo.SetPaths([]string{*req.Path})
+	}
+	if req.Priority != "" && priority.IsValid() {
+		todo.Priority = priority
 	}
 
 	todos = append(todos, *todo)
@@ -209,9 +219,10 @@ func (s *Server) toggleTodo(w http.ResponseWriter, r *http.Request, todoID strin
 // updateTodo updates a todo
 func (s *Server) updateTodo(w http.ResponseWriter, r *http.Request, todoID string) {
 	var req struct {
-		Text   string  `json:"text"`
-		Status string  `json:"status"`
-		Path   *string `json:"path"`
+		Text     string  `json:"text"`
+		Status   string  `json:"status"`
+		Path     *string `json:"path"`
+		Priority string  `json:"priority"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -236,6 +247,14 @@ func (s *Server) updateTodo(w http.ResponseWriter, r *http.Request, todoID strin
 	}
 	if req.Status != "" {
 		todos[idx].Status = types.Status(req.Status)
+	}
+	if req.Priority != "" {
+		p := types.Priority(strings.ToLower(req.Priority))
+		if !p.IsValid() {
+			json.NewEncoder(w).Encode(map[string]string{"error": "Invalid priority"})
+			return
+		}
+		todos[idx].Priority = p
 	}
 	if req.Path != nil {
 		if *req.Path == "" {
@@ -486,6 +505,18 @@ var indexHTML = `<!DOCTYPE html>
         }
         .filter-btn:hover { border-color: var(--text-secondary); color: var(--text-primary); }
         .filter-btn.active { background: var(--accent-green); border-color: var(--accent-green); color: var(--bg-primary); }
+        .filter-select {
+            padding: 6px 10px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius);
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+            font-weight: 500;
+            font-family: inherit;
+            cursor: pointer;
+        }
+        .filter-select:focus { outline: none; border-color: var(--accent-green); }
 
         /* Todos Container */
         .todos-container {
@@ -562,6 +593,10 @@ var indexHTML = `<!DOCTYPE html>
         .status-blocked { border-color: var(--accent-red); color: var(--accent-red); background: rgba(255, 51, 102, 0.08); }
         .status-waiting { border-color: var(--accent-yellow); color: var(--accent-yellow); background: rgba(255, 204, 0, 0.08); }
         .status-tech-debt { border-color: var(--accent-orange); color: var(--accent-orange); background: rgba(255, 149, 0, 0.08); }
+        .todo-priority { padding: 2px 8px; border-radius: 3px; font-size: 0.65rem; font-weight: 700; letter-spacing: 0.5px; border: 1px solid; text-transform: uppercase; }
+        .priority-high { border-color: var(--accent-red); color: var(--accent-red); background: rgba(255, 51, 102, 0.08); }
+        .priority-medium { border-color: var(--accent-yellow); color: var(--accent-yellow); background: rgba(255, 204, 0, 0.08); }
+        .priority-low { border-color: var(--accent-blue); color: var(--accent-blue); background: rgba(77, 159, 255, 0.08); }
 
         .todo-path { display: flex; align-items: center; gap: 4px; color: var(--accent-purple); }
         .todo-path::before { content: "📂"; font-size: 0.7rem; }
@@ -727,6 +762,11 @@ var indexHTML = `<!DOCTYPE html>
             <div class="add-form-row">
                 <input type="text" class="add-input" id="new-todo-text" placeholder="What needs to be done?" autocomplete="off" />
                 <input type="text" class="add-input path-input" id="new-todo-path" placeholder="path" autocomplete="off" />
+                <select class="add-input path-input" id="new-todo-priority">
+                    <option value="medium" selected>medium</option>
+                    <option value="high">high</option>
+                    <option value="low">low</option>
+                </select>
                 <button class="add-btn" onclick="addTodo()">+ add</button>
             </div>
         </div>
@@ -738,6 +778,12 @@ var indexHTML = `<!DOCTYPE html>
             <button class="filter-btn" data-filter="blocked">blocked</button>
             <button class="filter-btn" data-filter="waiting">waiting</button>
             <button class="filter-btn" data-filter="tech-debt">debt</button>
+            <select id="priority-filter" class="filter-select">
+                <option value="all">priority: any</option>
+                <option value="high">high first</option>
+                <option value="medium">medium</option>
+                <option value="low">low</option>
+            </select>
         </div>
 
         <div class="todos-container">
@@ -769,6 +815,7 @@ var indexHTML = `<!DOCTYPE html>
             <input type="hidden" id="edit-todo-id" />
             <div class="modal-field"><label>text</label><input type="text" id="edit-todo-text" /></div>
             <div class="modal-field"><label>status</label><select id="edit-todo-status"><option value="open">open</option><option value="done">done</option><option value="blocked">blocked</option><option value="waiting">waiting</option><option value="tech-debt">tech-debt</option></select></div>
+            <div class="modal-field"><label>priority</label><select id="edit-todo-priority"><option value="high">high</option><option value="medium" selected>medium</option><option value="low">low</option></select></div>
             <div class="modal-field"><label>path</label><input type="text" id="edit-todo-path" placeholder="optional" /></div>
             <div class="modal-actions"><button class="btn btn-secondary" onclick="closeEditModal()">cancel</button><button class="btn btn-primary" onclick="saveEdit()">save</button></div>
         </div>
@@ -787,6 +834,7 @@ var indexHTML = `<!DOCTYPE html>
 
     <script>
         let currentFilter = 'all';
+        let currentPriorityFilter = 'all';
         let allTodos = [];
         let selectedIndex = -1;
         let currentTheme = localStorage.getItem('todo-theme') || 'dark';
@@ -819,6 +867,11 @@ var indexHTML = `<!DOCTYPE html>
                     selectedIndex = -1;
                     renderTodos();
                 });
+            });
+            document.getElementById('priority-filter').addEventListener('change', e => {
+                currentPriorityFilter = e.target.value;
+                selectedIndex = -1;
+                renderTodos();
             });
             document.getElementById('new-todo-text').addEventListener('keypress', e => { if (e.key === 'Enter') addTodo(); });
             document.addEventListener('keydown', handleKeyboard);
@@ -858,11 +911,31 @@ var indexHTML = `<!DOCTYPE html>
             document.getElementById('stats').innerHTML = stats.map(s => '<div class="stat ' + s.key + '"><span class="stat-value">' + s.value + '</span><span class="stat-label">' + s.label + '</span></div>').join('');
         }
 
+        function getFilteredTodos() {
+            let filtered = allTodos.slice();
+            if (currentFilter !== 'all') filtered = filtered.filter(t => t.status === currentFilter);
+            if (currentPriorityFilter !== 'all') filtered = filtered.filter(t => normalizePriority(t.priority) === currentPriorityFilter);
+            return sortByPriority(filtered);
+        }
+
+        function sortByPriority(todos) {
+            return todos.slice().sort((a, b) => {
+                const diff = priorityWeight(b.priority) - priorityWeight(a.priority);
+                if (diff !== 0) return diff;
+                return new Date(a.createdAt) - new Date(b.createdAt);
+            });
+        }
+
+        function priorityMeta(priority) {
+            const p = normalizePriority(priority);
+            return { key: p, label: p === 'medium' ? 'med' : p };
+        }
+
         function renderTodos() {
-            let filtered = allTodos;
-            if (currentFilter !== 'all') filtered = allTodos.filter(t => t.status === currentFilter);
+            const filtered = getFilteredTodos();
+            const hasFilters = currentFilter !== 'all' || currentPriorityFilter !== 'all';
             if (filtered.length === 0) {
-                document.getElementById('todos').innerHTML = '<div class="empty-state"><div class="icon">◇</div><h3>No todos</h3><p>' + (currentFilter === 'all' ? 'Add your first todo above' : 'Try a different filter') + '</p></div>';
+                document.getElementById('todos').innerHTML = '<div class="empty-state"><div class="icon">◇</div><h3>No todos</h3><p>' + (hasFilters ? 'Try a different filter' : 'Add your first todo above') + '</p></div>';
                 return;
             }
             document.getElementById('todos').innerHTML = filtered.map((todo, i) => {
@@ -870,11 +943,13 @@ var indexHTML = `<!DOCTYPE html>
                 const isSelected = i === selectedIndex;
                 const paths = todo.context?.paths || [];
                 const branch = todo.context?.branch || '';
+                const priority = priorityMeta(todo.priority);
                 return '<div class="todo-item' + (isDone ? ' done' : '') + (isSelected ? ' selected' : '') + '" data-id="' + todo.id + '" data-index="' + i + '">' +
                     '<span class="todo-index">' + String(i + 1).padStart(2, '0') + '</span>' +
                     '<div class="todo-checkbox" onclick="toggleTodo(\'' + todo.id + '\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="20 6 9 17 4 12"/></svg></div>' +
                     '<div class="todo-content"><div class="todo-text">' + escapeHtml(todo.text) + '</div><div class="todo-meta">' +
                     '<span class="todo-status status-' + todo.status + '">' + todo.status + '</span>' +
+                    '<span class="todo-priority priority-' + priority.key + '">' + priority.label + '</span>' +
                     '<span class="todo-date">' + formatDate(todo.createdAt) + '</span>' +
                     (paths.length > 0 ? '<span class="todo-path">' + escapeHtml(paths[0]) + '</span>' : '') +
                     (branch ? '<span class="todo-branch">' + escapeHtml(branch) + '</span>' : '') +
@@ -889,10 +964,11 @@ var indexHTML = `<!DOCTYPE html>
         async function addTodo() {
             const text = document.getElementById('new-todo-text').value.trim();
             const path = document.getElementById('new-todo-path').value.trim();
+            const priority = document.getElementById('new-todo-priority').value;
             if (!text) { showToast('Enter a todo', 'error'); return; }
             try {
-                const res = await fetch('/api/todos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, path: path || null }) });
-                if (res.ok) { document.getElementById('new-todo-text').value = ''; document.getElementById('new-todo-path').value = ''; await loadTodos(); showToast('Added', 'success'); }
+                const res = await fetch('/api/todos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, path: path || null, priority }) });
+                if (res.ok) { document.getElementById('new-todo-text').value = ''; document.getElementById('new-todo-path').value = ''; document.getElementById('new-todo-priority').value = 'medium'; await loadTodos(); showToast('Added', 'success'); }
                 else throw new Error('Failed');
             } catch (err) { showToast('Failed to add', 'error'); }
         }
@@ -905,6 +981,7 @@ var indexHTML = `<!DOCTYPE html>
             document.getElementById('edit-todo-id').value = id;
             document.getElementById('edit-todo-text').value = todo.text;
             document.getElementById('edit-todo-status').value = todo.status;
+            document.getElementById('edit-todo-priority').value = normalizePriority(todo.priority);
             document.getElementById('edit-todo-path').value = (todo.context?.paths || []).join(', ');
             document.getElementById('edit-modal').classList.add('active');
             setTimeout(() => document.getElementById('edit-todo-text').focus(), 100);
@@ -916,10 +993,11 @@ var indexHTML = `<!DOCTYPE html>
             const id = document.getElementById('edit-todo-id').value;
             const text = document.getElementById('edit-todo-text').value.trim();
             const status = document.getElementById('edit-todo-status').value;
+            const priority = document.getElementById('edit-todo-priority').value;
             const path = document.getElementById('edit-todo-path').value.trim();
             if (!text) { showToast('Text required', 'error'); return; }
             try {
-                const res = await fetch('/api/todos/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, status, path: path || null }) });
+                const res = await fetch('/api/todos/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, status, priority, path: path || null }) });
                 if (res.ok) { closeEditModal(); await loadTodos(); showToast('Updated', 'success'); } else throw new Error('Failed');
             } catch (err) { showToast('Update failed', 'error'); }
         }
@@ -936,7 +1014,7 @@ var indexHTML = `<!DOCTYPE html>
         }
 
         function handleKeyboard(e) {
-            const filtered = currentFilter === 'all' ? allTodos : allTodos.filter(t => t.status === currentFilter);
+            const filtered = getFilteredTodos();
             const isModalOpen = document.querySelector('.modal-overlay.active');
             const isInputFocused = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
             if (isModalOpen || isInputFocused) return;
@@ -954,6 +1032,8 @@ var indexHTML = `<!DOCTYPE html>
         function scrollToSelected() { const selected = document.querySelector('.todo-item.selected'); if (selected) selected.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
         function formatDate(dateStr) { const d = new Date(dateStr); return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); }
         function escapeHtml(text) { const div = document.createElement('div'); div.textContent = text; return div.innerHTML; }
+        function normalizePriority(priority) { const p = (priority || 'medium').toString().toLowerCase(); return ['high', 'medium', 'low'].includes(p) ? p : 'medium'; }
+        function priorityWeight(priority) { const p = normalizePriority(priority); if (p === 'high') return 3; if (p === 'low') return 1; return 2; }
         function showToast(message, type = 'success') { const toast = document.getElementById('toast'); toast.className = 'toast ' + type + ' show'; document.getElementById('toast-message').textContent = message; setTimeout(() => toast.classList.remove('show'), 2500); }
         setInterval(loadTodos, 10000);
     </script>

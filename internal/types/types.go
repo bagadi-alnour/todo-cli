@@ -40,6 +40,25 @@ const (
 	PriorityHigh   Priority = "high"
 )
 
+// IsValid checks if a priority is valid
+func (p Priority) IsValid() bool {
+	return p == PriorityLow || p == PriorityMedium || p == PriorityHigh
+}
+
+// PriorityWeight gives a numeric weight for sorting (high first)
+func (p Priority) PriorityWeight() int {
+	switch p {
+	case PriorityHigh:
+		return 3
+	case PriorityMedium:
+		return 2
+	case PriorityLow:
+		return 1
+	default:
+		return 0
+	}
+}
+
 // Context holds contextual information about where the todo applies
 type Context struct {
 	Paths  []string `json:"paths,omitempty"`
