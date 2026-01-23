@@ -51,6 +51,9 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Track whether the user supplied --path/-p
+	pathFlagUsed := cmd.Flags().Changed("path")
+
 	// Load config
 	config, err := storage.LoadConfig(projectRoot)
 	if err != nil {
@@ -62,12 +65,10 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	if strings.TrimSpace(text) == "" {
 		return fmt.Errorf("todo text cannot be empty")
 	}
-	if cmd.Flags().Changed("path") {
-		// Treat args after the first as implicit path entries when --path is present.
+	if (pathFlagUsed || len(addPaths) > 0) && len(args) > 1 {
+		// Treat args after the first as implicit path entries when a path flag is present.
 		text = strings.TrimSpace(args[0])
-		if len(args) > 1 {
-			addPaths = append(addPaths, args[1:]...)
-		}
+		addPaths = append(addPaths, args[1:]...)
 	}
 
 	// Load existing todos
