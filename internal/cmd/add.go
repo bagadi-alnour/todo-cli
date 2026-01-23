@@ -85,9 +85,10 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	}
 	todo.Priority = priority
 
-	// Set paths if provided
-	if len(addPaths) > 0 {
-		todo.SetPaths(addPaths)
+	// Set paths if provided (supports comma-separated lists)
+	normalizedPaths := normalizePaths(addPaths)
+	if len(normalizedPaths) > 0 {
+		todo.SetPaths(normalizedPaths)
 	}
 
 	// Capture git context unless disabled
@@ -111,8 +112,8 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	// Print success message
 	terminal.PrintSuccess(fmt.Sprintf("Added: %s", text))
 
-	if len(addPaths) > 0 {
-		fmt.Printf("  %s📁 Paths: %s%s\n", terminal.Dim, strings.Join(addPaths, ", "), terminal.Reset)
+	if len(normalizedPaths) > 0 {
+		fmt.Printf("  %s📁 Paths: %s%s\n", terminal.Dim, strings.Join(normalizedPaths, ", "), terminal.Reset)
 	}
 
 	if todo.Context.Branch != "" {

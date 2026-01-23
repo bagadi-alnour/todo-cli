@@ -91,7 +91,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		todos[idx].Context.Paths = []string{}
 		updated = true
 	} else if cmd.Flags().Changed("path") {
-		todos[idx].Context.Paths = editPaths
+		todos[idx].Context.Paths = normalizePaths(editPaths)
 		updated = true
 	}
 
