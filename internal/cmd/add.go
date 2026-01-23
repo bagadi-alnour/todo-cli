@@ -57,10 +57,17 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	// Join all args as the todo text
+	// Handle text and any trailing args when --path is used
 	text := strings.Join(args, " ")
 	if strings.TrimSpace(text) == "" {
 		return fmt.Errorf("todo text cannot be empty")
+	}
+	if cmd.Flags().Changed("path") {
+		// Treat args after the first as implicit path entries when --path is present.
+		text = strings.TrimSpace(args[0])
+		if len(args) > 1 {
+			addPaths = append(addPaths, args[1:]...)
+		}
 	}
 
 	// Load existing todos
