@@ -45,6 +45,8 @@ func init() {
 	listCmd.Flags().StringVarP(&listStatus, "status", "s", "", "Filter by status: open, done, blocked, waiting, tech-debt")
 	listCmd.Flags().StringVarP(&listPath, "path", "p", "", "Filter by path prefix")
 	listCmd.Flags().StringVar(&listPriority, "priority", "", "Filter by priority: low, medium, high")
+
+	registerPathFlagCompletion(listCmd, "path")
 }
 
 func runList(cmd *cobra.Command, args []string) error {

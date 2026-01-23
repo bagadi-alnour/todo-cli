@@ -3,7 +3,9 @@ package terminal
 import (
 	"fmt"
 	"os"
+	"strings"
 
+	"github.com/mattn/go-runewidth"
 	"golang.org/x/term"
 )
 
@@ -172,10 +174,22 @@ func StatusIcon(status string) string {
 
 // PrintHeader prints a styled header box
 func PrintHeader(title, icon string) {
+	const baseWidth = 55 // minimum inner width between vertical borders
+
+	iconWidth := runewidth.StringWidth(icon)
+	titleWidth := runewidth.StringWidth(title)
+	textWidth := 2 + iconWidth + 2 + titleWidth // spaces after │ and around icon
+	innerWidth := baseWidth
+	if textWidth > innerWidth {
+		innerWidth = textWidth
+	}
+	padding := innerWidth - textWidth
+	bar := strings.Repeat("─", innerWidth)
+
 	fmt.Println()
-	fmt.Printf("  %s%s╭─────────────────────────────────────────────────────╮%s\n", Bold, BrightCyan, Reset)
-	fmt.Printf("  %s%s│  %s  %-49s│%s\n", Bold, BrightCyan, icon, title, Reset)
-	fmt.Printf("  %s%s╰─────────────────────────────────────────────────────╯%s\n", Bold, BrightCyan, Reset)
+	fmt.Printf("  %s%s╭%s╮%s\n", Bold, BrightCyan, bar, Reset)
+	fmt.Printf("  %s%s│  %s  %s%s│%s\n", Bold, BrightCyan, icon, title, strings.Repeat(" ", padding), Reset)
+	fmt.Printf("  %s%s╰%s╯%s\n", Bold, BrightCyan, bar, Reset)
 	fmt.Println()
 }
 

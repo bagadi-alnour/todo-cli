@@ -37,6 +37,9 @@ func init() {
 	editCmd.Flags().BoolVar(&editClearPaths, "clear-paths", false, "Remove all associated paths")
 	editCmd.Flags().StringVar(&editPriority, "priority", "", "Set priority: low, medium, high")
 	editCmd.Flags().StringVar(&editStatus, "status", "", "Set status: open, done, blocked, waiting, tech-debt")
+
+	// Project-aware path completion
+	registerPathFlagCompletion(editCmd, "path")
 }
 
 func runEdit(cmd *cobra.Command, args []string) error {

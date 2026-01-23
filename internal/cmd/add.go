@@ -39,6 +39,9 @@ func init() {
 	addCmd.Flags().StringArrayVarP(&addPaths, "path", "p", []string{}, "Associate with file/folder paths (can be used multiple times)")
 	addCmd.Flags().StringVar(&addPriority, "priority", "medium", "Priority level: low, medium, high")
 	addCmd.Flags().BoolVar(&addNoGit, "no-git", false, "Don't capture git context (branch/commit)")
+
+	// Project-aware path completion
+	registerPathFlagCompletion(addCmd, "path")
 }
 
 func runAdd(cmd *cobra.Command, args []string) error {

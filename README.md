@@ -43,9 +43,68 @@ Terminal-inspired dark theme with light mode toggle. Add, edit, and manage todos
 
 ## Installation
 
+### macOS
+
 ```bash
+# Homebrew (recommended)
 brew install bagadi-alnour/tap/todo
+
+# From source
+git clone https://github.com/bagadi-alnour/todo-cli.git
+cd todo-cli/todo-cli && ./scripts/install.sh
 ```
+
+### Linux
+
+```bash
+# From source (requires Go 1.21+)
+git clone https://github.com/bagadi-alnour/todo-cli.git
+cd todo-cli/todo-cli && ./scripts/install.sh
+
+# Or with Go directly (installs to $GOBIN or $GOPATH/bin)
+go install github.com/bagadi-alnour/todo-cli/cmd/todo@latest
+```
+
+### Cross-build binaries
+
+To produce binaries for multiple platforms from your dev machine:
+
+```bash
+make build-all
+# outputs todo-darwin-{amd64,arm64}, todo-linux-{amd64,arm64}, todo-windows-amd64.exe
+```
+
+### Shell auto-completion
+
+The install script now auto-installs completions for your current shell (bash/zsh/fish). Restart the shell after install. To regenerate manually:
+
+- **Keep the right binary first in PATH:** the installer drops `todo` in `~/.local/bin`. Make sure it appears **before** Homebrew (`/opt/homebrew/bin`) or other older copies:  
+  `export PATH="$HOME/.local/bin:$PATH" && hash -r`
+
+- **bash (Linux/macOS):**
+  ```bash
+  todo completion bash > /etc/bash_completion.d/todo   # may need sudo
+  # or: todo completion bash >> ~/.bashrc
+  ```
+- **zsh:**
+  ```bash
+  mkdir -p ~/.zsh/completions
+  todo completion zsh > ~/.zsh/completions/_todo
+  echo 'fpath+=~/.zsh/completions; autoload -Uz compinit; compinit' >> ~/.zshrc
+  ```
+- **fish:**
+  ```bash
+  mkdir -p ~/.config/fish/completions
+  todo completion fish > ~/.config/fish/completions/todo.fish
+  ```
+- **PowerShell:**
+  ```powershell
+  todo completion powershell | Out-String | Invoke-Expression
+  # persist:
+  todo completion powershell > $PROFILE
+  ```
+
+Tip: `--path/-p` flags (`add`, `edit`, `list`) now complete files and directories relative to your todo project root.
 
 ## Quick Start
 
@@ -254,4 +313,3 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
-
