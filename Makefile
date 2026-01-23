@@ -10,6 +10,9 @@ LDFLAGS=-ldflags "-X github.com/bagadi-alnour/todo-cli/cmd.Version=$(VERSION) -X
 GOBASE=$(shell pwd)
 GOBIN=$(GOBASE)/bin
 GOCMD=go
+# Use a throwaway Go build cache (keeps runs reproducible-ish without persisting between builds)
+GOCACHE ?= $(TMPDIR)/todo-go-cache
+export GOCACHE
 
 # Build the binary
 .PHONY: build

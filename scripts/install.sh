@@ -12,8 +12,11 @@ if ! command -v "$GO_CMD" >/dev/null 2>&1; then
   exit 1
 fi
 
-# Avoid permission issues in restricted environments
-GOCACHE=${GOCACHE:-${TMPDIR:-/tmp}/go-cache}
+# Use a disposable Go build cache to avoid polluting global cache
+if [[ -z "${GOCACHE:-}" || "${GOCACHE}" == "off" ]]; then
+  GOCACHE="$(mktemp -d 2>/dev/null || echo "${TMPDIR:-/tmp}/todo-install-go-cache")"
+  CLEANUP_GOCACHE=1
+fi
 
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
@@ -96,3 +99,8 @@ case "$current_shell" in
     install_completions fish
     ;;
 esac
+
+# Cleanup temporary cache if we created one
+if [[ "${CLEANUP_GOCACHE:-0}" -eq 1 ]]; then
+  rm -rf "$GOCACHE" >/dev/null 2>&1 || true
+fi
