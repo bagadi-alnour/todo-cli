@@ -1,7 +1,7 @@
 # Binaries
 todo-cli
 /todo
-todo-*
+/todo-*
 *.exe
 
 # Test coverage
