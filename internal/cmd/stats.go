@@ -3,16 +3,21 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/bagadi-alnour/todo-cli/internal/contributors"
 	"github.com/bagadi-alnour/todo-cli/internal/storage"
 	"github.com/bagadi-alnour/todo-cli/internal/terminal"
 	"github.com/bagadi-alnour/todo-cli/internal/types"
 	"github.com/spf13/cobra"
 )
 
-var statsJSON bool
+var (
+	statsJSON        bool
+	statsByAssignee  bool
+)
 
 var statsCmd = &cobra.Command{
 	Use:   "stats",
@@ -27,6 +32,7 @@ priority, tag breakdown, completion rate, and average age of open items.`,
 func init() {
 	rootCmd.AddCommand(statsCmd)
 	statsCmd.Flags().BoolVar(&statsJSON, "json", false, "Output as JSON")
+	statsCmd.Flags().BoolVar(&statsByAssignee, "by-assignee", false, "Include breakdown by assignee")
 }
 
 type statsReport struct {
@@ -34,6 +40,7 @@ type statsReport struct {
 	ByStatus           map[string]int `json:"byStatus"`
 	ByPriority         map[string]int `json:"byPriority"`
 	ByTag              map[string]int `json:"byTag"`
+	ByAssignee         map[string]int `json:"byAssignee,omitempty"`
 	CompletionRate     float64        `json:"completionRate"`
 	AvgAgeDays         float64        `json:"avgAgeDaysOpen"`
 	AvgCompletionHours float64        `json:"avgCompletionHours"`
@@ -46,6 +53,7 @@ func computeStats(todos []types.Todo, now time.Time) statsReport {
 		ByStatus:   countByStatus(todos),
 		ByPriority: map[string]int{"high": 0, "medium": 0, "low": 0},
 		ByTag:      map[string]int{},
+		ByAssignee: map[string]int{},
 	}
 
 	var openAgeSum float64
@@ -56,6 +64,9 @@ func computeStats(todos []types.Todo, now time.Time) statsReport {
 		r.ByPriority[string(t.Priority)]++
 		for _, tag := range t.Tags {
 			r.ByTag[strings.ToLower(tag)]++
+		}
+		if t.Assignee != "" {
+			r.ByAssignee[t.Assignee]++
 		}
 		if t.Status == types.StatusOpen {
 			openCount++
@@ -128,6 +139,30 @@ func runStats(cmd *cobra.Command, args []string) error {
 	fmt.Printf("    %s-%s Medium  %s%d%s\n", terminal.Yellow, terminal.Reset, terminal.Bold, report.ByPriority["medium"], terminal.Reset)
 	fmt.Printf("    %s▼%s Low     %s%d%s\n", terminal.Dim, terminal.Reset, terminal.Bold, report.ByPriority["low"], terminal.Reset)
 	fmt.Println()
+
+	showAssignee := statsByAssignee || len(report.ByAssignee) > 0
+	if showAssignee && len(report.ByAssignee) > 0 {
+		fmt.Printf("  %sAssignees%s\n", terminal.Bold+terminal.BrightCyan, terminal.Reset)
+		type assigneeCount struct {
+			email string
+			count int
+		}
+		var rows []assigneeCount
+		for email, count := range report.ByAssignee {
+			rows = append(rows, assigneeCount{email: email, count: count})
+		}
+		sort.Slice(rows, func(i, j int) bool {
+			if rows[i].count != rows[j].count {
+				return rows[i].count > rows[j].count
+			}
+			return rows[i].email < rows[j].email
+		})
+		for _, row := range rows {
+			label := contributors.LookupName(projectRoot, row.email)
+			fmt.Printf("    %s@%s%s %d\n", terminal.Magenta, label, terminal.Reset, row.count)
+		}
+		fmt.Println()
+	}
 
 	// Tags
 	if len(report.ByTag) > 0 {

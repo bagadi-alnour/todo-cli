@@ -18,6 +18,8 @@ func TestSaveAndLoadTodos(t *testing.T) {
 		*types.NewTodo("id1", "first task"),
 		*types.NewTodo("id2", "second task"),
 	}
+	todos[0].CreatedBy = "test-user"
+	todos[1].CreatedBy = "test-user"
 	todos[1].Priority = types.PriorityHigh
 	todos[1].Context.Paths = []string{"src"}
 
@@ -123,6 +125,18 @@ func TestTagAndDueFilters(t *testing.T) {
 
 	if got := FilterTodosDueAfter(todos, now.Add(24*time.Hour)); len(got) != 1 || got[0].ID != "a3" {
 		t.Fatalf("unexpected due-after filter result: %+v", got)
+	}
+}
+
+func TestFilterTodosByAssignee(t *testing.T) {
+	todos := []types.Todo{
+		{ID: "a1", Text: "one", Assignee: "alice@example.com"},
+		{ID: "a2", Text: "two", Assignee: "bob@example.com"},
+		{ID: "a3", Text: "three"},
+	}
+	got := FilterTodosByAssignee(todos, []string{"alice@example.com"})
+	if len(got) != 1 || got[0].ID != "a1" {
+		t.Fatalf("unexpected assignee filter: %+v", got)
 	}
 }
 

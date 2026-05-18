@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/bagadi-alnour/todo-cli/internal/contributors"
 	"github.com/bagadi-alnour/todo-cli/internal/storage"
 	"github.com/bagadi-alnour/todo-cli/internal/types"
 	"github.com/spf13/cobra"
@@ -59,6 +60,7 @@ func exportJSON(cmd *cobra.Command, todos []types.Todo) error {
 
 func exportMarkdown(cmd *cobra.Command, todos []types.Todo) error {
 	w := cmd.OutOrStdout()
+	projectRoot, _ := storage.FindProjectRoot(".")
 	fmt.Fprintln(w, "# Todos")
 
 	groups := map[types.Priority][]types.Todo{}
@@ -88,6 +90,10 @@ func exportMarkdown(cmd *cobra.Command, todos []types.Todo) error {
 			}
 			for _, tag := range t.Tags {
 				line += " #" + tag
+			}
+			if t.Assignee != "" {
+				label := contributors.LookupName(projectRoot, t.Assignee)
+				line += " → @" + label
 			}
 			fmt.Fprintln(w, line)
 		}

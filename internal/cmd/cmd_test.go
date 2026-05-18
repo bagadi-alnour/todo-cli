@@ -13,6 +13,7 @@ import (
 
 func setupTestProject(t *testing.T) string {
 	t.Helper()
+	t.Setenv("TODO_USER_NAME", "Test User")
 	dir := t.TempDir()
 	if _, err := storage.InitProject(dir, true); err != nil {
 		t.Fatalf("init project: %v", err)
@@ -278,8 +279,8 @@ func TestInitCommand(t *testing.T) {
 	if _, err := os.Stat(todosDir); os.IsNotExist(err) {
 		t.Fatal("expected .todos directory to be created")
 	}
-	if _, err := os.Stat(filepath.Join(todosDir, "todos.json")); os.IsNotExist(err) {
-		t.Fatal("expected todos.json to be created")
+	if _, err := os.Stat(filepath.Join(todosDir, "users")); os.IsNotExist(err) {
+		t.Fatal("expected users directory to be created")
 	}
 	if _, err := os.Stat(filepath.Join(todosDir, "config.json")); os.IsNotExist(err) {
 		t.Fatal("expected config.json to be created")

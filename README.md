@@ -19,7 +19,8 @@
   <a href="#scripting---json-output">JSON</a> •
   <a href="#web-ui">Web UI</a> •
   <a href="#storage-format">Storage</a> •
-  <a href="#roadmap">Roadmap</a>
+  <a href="#roadmap">Roadmap</a> •
+  <a href="CHANGELOG.md">Changelog</a>
 </p>
 
 ---
@@ -50,6 +51,9 @@ todo done 1
 ## Features
 
 - **Project-local storage** — Todos live in `.todos/` inside each repo (optionally committed for the team).
+- **Per-creator files** — Each author’s todos go in `.todos/users/<firstname-lastname>.json` (from `git user.name`), so teammates rarely edit the same file in Git.
+- **Assignees** — Tag work with `--assign` (git contributor email); filter with `list --assignee`, stats with `stats --by-assignee`, and pick assignees in the Web UI.
+- **Git contributors cache** — `todo contributors` lists repo authors for assignee completion and blame-based suggestions on `add`.
 - **Context-aware** — Attach file paths; git branch and commit captured automatically.
 - **Branch view** — `todo context` shows todos for the current branch. `todo here` shows todos for the current directory.
 - **Tags and due dates** — Filter with `--tag`, `--overdue`, `--due-before`, `--due-after`.
@@ -166,7 +170,9 @@ todo completion powershell | Out-String | Invoke-Expression
 
 ### `todo init`
 
-Create `.todos/`, `todos.json`, and `config.json` in the current directory.
+Create `.todos/`, `users/`, and `config.json` in the current directory. Your first todo file appears when you run `todo add` (requires `git config user.name`, or set `TODO_USER_NAME`).
+
+Legacy projects with a single `.todos/todos.json` are migrated automatically into `users/` on first load.
 
 ```bash
 todo init
@@ -188,7 +194,11 @@ todo add "API" --json --no-git
 todo add "Weekly audit" --recur weekly --due 2026-06-01
 todo add "DB migration" --blocked-by abc123
 todo add "Ship feature" --blocks def456
+todo add "Review PR" --assign me
+todo add "Ops runbook" --assign alice@example.com
 ```
+
+`--assign` accepts a contributor name, email prefix, or `me` (your `git config user.email`). With `--path`, `todo add` may suggest an assignee from `git blame` when you omit `--assign`.
 
 Due date supports: `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM`, RFC3339, `today`, `tomorrow`, `+2d`.
 
@@ -200,6 +210,7 @@ Default: **interactive TUI** when stdout is a TTY.
 
 ```bash
 todo list --static
+todo list --static --details
 todo list -s open
 todo list --status done
 todo list -p src/
@@ -207,6 +218,8 @@ todo list --priority high
 todo list -t backend -t frontend
 todo list --overdue
 todo list --due-before 2026-03-01
+todo list --assignee me
+todo list --assignee alice
 todo list --json
 ```
 
@@ -216,6 +229,7 @@ todo list --json
 |-----|--------|
 | `↑` `↓` or `j` `k` | Move selection |
 | `Space` / `Enter` | Toggle status (confirm `Y` when marking done; re-open is instant) |
+| `i` or `→` / `←` | Expand / collapse full details for the selected todo |
 | `d` `x` | Delete (confirm `Y` / cancel `N` `q` `Esc`) |
 | `g` / `G` | Jump to first / last |
 | `?` `h` `H` | Help overlay |
@@ -255,6 +269,20 @@ todo edit 1 --blocks def456
 todo edit 1 --clear-blocked-by
 todo edit 1 --recur weekly
 todo edit 1 --clear-recur
+todo edit 1 --assign bob
+todo edit 1 --clear-assignee
+```
+
+---
+
+### `todo contributors`
+
+List git contributors for the repo (cached in `.todos/contributors.json`). Used for `--assign` / `--assignee` tab completion.
+
+```bash
+todo contributors
+todo contributors --refresh
+todo contributors --json
 ```
 
 ---
@@ -355,6 +383,7 @@ todo search "fix" --json
 
 ```bash
 todo stats
+todo stats --by-assignee
 todo stats --json
 ```
 
@@ -362,7 +391,7 @@ todo stats --json
 
 ### `todo archive`
 
-Move **done** items from `todos.json` into `.todos/archive.json`.
+Move **done** items from all user files into `.todos/archive.json`.
 
 ```bash
 todo archive
@@ -388,7 +417,7 @@ Import todos from a previously exported JSON file. Duplicate IDs are skipped.
 
 ```bash
 todo import backup.json
-todo import ../other-project/.todos/todos.json
+todo import ../other-project/.todos/users/alice-smith.json
 ```
 
 ---
@@ -401,7 +430,7 @@ todo doctor --fix
 todo doctor --json
 ```
 
-Checks: project init, todos file, config file, git repo, write access.
+Checks: project init, `users/` storage, config file, git repo, write access.
 
 ---
 
@@ -494,8 +523,9 @@ todo here --json | jq '.todos[].text'
 
 ## Web UI
 
-- Dashboard-style overview with filters, keyboard shortcuts, and live updates.
-- Reads the same `.todos/` files as the CLI — no separate database.
+- Dashboard-style overview with filters, assignee dropdown, keyboard shortcuts, and live updates.
+- Reads the same `.todos/` files as the CLI — merges all `users/*.json` — no separate database.
+- **All** view hides completed todos (use the **done** filter to see them); list is sorted newest-first.
 - **No cloud sync. No account. No background daemon.**
 - Default port: **17887**. Override with `--port`.
 
@@ -530,6 +560,10 @@ todo add "Dependency audit" --recur weekly --due 2026-06-01 --tag maintenance
 todo add "Write API endpoints" --blocks abc123
 todo edit 1 --blocked-by def456
 
+# Assign and filter by owner
+todo add "Fix billing webhook" -p src/billing --assign me
+todo list --static --assignee me
+
 # Scan codebase for TODO comments
 todo scan --dry-run           # preview first
 todo scan --tag tech-debt     # import with tag
@@ -537,7 +571,9 @@ todo scan --tag tech-debt     # import with tag
 
 ## Storage format
 
-### `.todos/todos.json`
+### `.todos/users/<firstname-lastname>.json`
+
+Each file holds one creator’s todos. The filename comes from `git config user.name` (slugified, e.g. `Jane Doe` → `jane-doe.json`). The CLI and Web UI **read all** `users/*.json` and merge them for `list`, `next`, `stats`, and the UI.
 
 ```json
 {
@@ -550,6 +586,8 @@ todo scan --tag tech-debt     # import with tag
       "status": "open",
       "priority": "high",
       "tags": ["backend", "security"],
+      "assignee": "alice@example.com",
+      "createdBy": "jane-doe",
       "dueAt": "2026-01-25T23:59:59Z",
       "recur": "weekly",
       "blockedBy": ["b1c2d3e4"],
@@ -567,9 +605,20 @@ todo scan --tag tech-debt     # import with tag
 }
 ```
 
+- **`createdBy`** — slug of who added the todo (which file owns it). Not the same as **assignee** (who should do the work).
+- **`assignee`** — git author email (resolved from names via `todo contributors`).
+
+### Legacy `.todos/todos.json`
+
+Older projects used a single `todos.json`. On first load it is migrated into `users/legacy.json` (or per-todo `createdBy` when present). New projects do not create `todos.json`.
+
+### `.todos/contributors.json`
+
+Cached output of `git shortlog` for assignee resolution and shell completion. Refreshed with `todo contributors --refresh`.
+
 ### `.todos/archive.json`
 
-Same shape as `todos.json`. Written by `todo archive`, appended over time.
+Same JSON shape as a user file. Written by `todo archive`, appended over time.
 
 ### `.todos/config.json`
 
@@ -585,30 +634,31 @@ Your data is plain JSON. Grep it, commit it, back it up, import it elsewhere.
 
 ## Sharing `.todos/` via Git
 
-Committing `.todos/` lets your team share todos across branches. This works well in practice, but be aware of merge conflicts.
+Committing `.todos/` lets your team share todos across branches. Everyone sees the full list via CLI/UI; each person’s new todos land in **their own** `users/<slug>.json`, which greatly reduces merge conflicts compared to one shared file.
 
 ### Handling merge conflicts
 
-When two branches both modify `todos.json` and get merged, Git may produce a conflict. The safest resolution strategy:
+Conflicts are most common when two branches edit the **same** `users/*.json` (same author) or `archive.json`. Resolution options:
 
-1. **Accept the incoming version** — pick whichever side has more data (typically the longer file).
-2. **Re-import the other** — export the losing side first (`todo export > /tmp/theirs.json`), resolve the conflict, then `todo import /tmp/theirs.json`. Duplicate IDs are automatically skipped.
-3. **Or merge manually** — `todos.json` is a flat JSON array. Copy missing todo objects from the conflicting side into the `"todos"` array, ensuring unique IDs.
+1. **Accept one side** — pick the file with more complete data.
+2. **Re-import** — export the other side (`todo export > /tmp/theirs.json`), resolve, then `todo import /tmp/theirs.json` (duplicate IDs skipped).
+3. **Merge manually** — copy missing todo objects into the `"todos"` array with unique IDs.
 
-**Recommended `.gitattributes`** to reduce noise:
+**Recommended `.gitattributes`** (also in this repo as [`.gitattributes`](.gitattributes)):
 
 ```gitattributes
-.todos/todos.json   merge=union
+.todos/users/*.json merge=union
 .todos/archive.json merge=union
+.todos/contributors.json merge=union
 ```
 
-The `merge=union` strategy keeps lines from both sides during a merge, which works for append-only JSON arrays. After a union merge, run `todo doctor --fix` to validate and deduplicate.
+After a union merge, run `todo doctor --fix` to validate and deduplicate.
 
-**Preventing conflicts entirely:**
+**Tips:**
 
-- Use short-lived branches.
-- Each developer adds todos on their own branch; merge frequently.
-- Use `todo export` / `todo import` for cross-branch sharing instead of committing `.todos/`.
+- Use short-lived branches and merge often.
+- Assignees can differ from file owner — hand off work with `--assign` without moving files.
+- Use `todo export` / `todo import` when you need to move todos between machines without committing `.todos/`.
 
 ## Status types
 
@@ -655,16 +705,19 @@ git config core.hooksPath githooks
 Releases are automated via [GoReleaser](https://goreleaser.com/). Push a tag to create a release:
 
 ```bash
-git tag v0.4.0
-git push origin v0.4.0
+git tag v0.6.0
+git push origin v0.6.0
 ```
+
+See [RELEASE.md](RELEASE.md) and [CHANGELOG.md](CHANGELOG.md) for the full release checklist.
 
 ## Roadmap
 
 - [ ] Editor integrations (VS Code, Neovim) — sidebar panel and inline diagnostics
 - [ ] Markdown import (parse `- [ ]` lists)
 - [ ] `todo context` auto-filter by changed files
-- [ ] Web UI improvements (drag-and-drop, dark mode, live SSE updates via `todo watch`)
+- [x] Web UI — assignee picker/filter, layout polish, newest-first sort
+- [ ] Web UI — drag-and-drop, dark mode, live SSE updates via `todo watch`
 - [ ] Subtask nesting (parent/child relationships)
 
 ## Contributing

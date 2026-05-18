@@ -113,6 +113,8 @@ type Todo struct {
 	Recur       Recurrence `json:"recur,omitempty"`
 	BlockedBy   []string   `json:"blockedBy,omitempty"`
 	Blocks      []string   `json:"blocks,omitempty"`
+	Assignee    string     `json:"assignee,omitempty"` // canonical git author email
+	CreatedBy   string     `json:"createdBy,omitempty"` // owner slug: firstname-lastname (git user.name)
 	CreatedAt   time.Time  `json:"createdAt"`
 	UpdatedAt   time.Time  `json:"updatedAt"`
 	CompletedAt *time.Time `json:"completedAt,omitempty"`

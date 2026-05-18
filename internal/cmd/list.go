@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bagadi-alnour/todo-cli/internal/contributors"
 	"github.com/bagadi-alnour/todo-cli/internal/storage"
 	"github.com/bagadi-alnour/todo-cli/internal/terminal"
 	"github.com/bagadi-alnour/todo-cli/internal/types"
@@ -21,7 +22,9 @@ var (
 	listOverdue   bool
 	listDueBefore string
 	listDueAfter  string
+	listDetails   bool
 	listJSON      bool
+	listAssignee  string
 )
 
 var listCmd = &cobra.Command{
@@ -32,13 +35,16 @@ var listCmd = &cobra.Command{
 By default, opens an interactive view where you can:
   - Navigate with arrow keys or j/k
   - Toggle status with Space or Enter
+  - Expand full details with i
   - Delete with d or x
   - Press ? for help
   - Press q to quit
 
-Use --static for non-interactive output.`,
+Use --static for non-interactive output and --details when you need the full
+metadata for every todo.`,
 	Example: `  todo list                  # Interactive mode
   todo list --static         # Non-interactive output
+  todo list --static --details # Full metadata in non-interactive output
   todo list --status open    # Filter by status
   todo list --path src/      # Filter by path`,
 	Aliases: []string{"ls"},
@@ -56,9 +62,12 @@ func init() {
 	listCmd.Flags().BoolVar(&listOverdue, "overdue", false, "Show only overdue open todos")
 	listCmd.Flags().StringVar(&listDueBefore, "due-before", "", "Show todos due on/before this date/time")
 	listCmd.Flags().StringVar(&listDueAfter, "due-after", "", "Show todos due on/after this date/time")
+	listCmd.Flags().BoolVar(&listDetails, "details", false, "Show full todo details in list output")
 	listCmd.Flags().BoolVar(&listJSON, "json", false, "Output as JSON")
+	listCmd.Flags().StringVar(&listAssignee, "assignee", "", "Filter by assignee (name, email prefix, or me)")
 
 	registerPathFlagCompletion(listCmd, "path")
+	registerAssigneeFlagCompletion(listCmd, "assignee")
 }
 
 func runList(cmd *cobra.Command, args []string) error {
@@ -114,6 +123,13 @@ func runList(cmd *cobra.Command, args []string) error {
 		}
 		todos = storage.FilterTodosDueAfter(todos, cutoff)
 	}
+	if listAssignee != "" {
+		emails, err := contributors.MatchEmails(projectRoot, listAssignee)
+		if err != nil {
+			return err
+		}
+		todos = storage.FilterTodosByAssignee(todos, emails)
+	}
 
 	storage.SortTodosByPriority(todos)
 
@@ -130,7 +146,7 @@ func runList(cmd *cobra.Command, args []string) error {
 
 	if len(todos) == 0 {
 		terminal.PrintInfo("No todos found")
-		if listStatus != "" || listPath != "" || listPriority != "" || len(listTags) > 0 || listOverdue || listDueBefore != "" || listDueAfter != "" {
+		if listStatus != "" || listPath != "" || listPriority != "" || len(listTags) > 0 || listOverdue || listDueBefore != "" || listDueAfter != "" || listAssignee != "" {
 			terminal.PrintDim("Try removing filters or add a new todo with: todo add \"Your task\"")
 		} else {
 			terminal.PrintDim("Add your first todo with: todo add \"Your task\"")
@@ -141,13 +157,13 @@ func runList(cmd *cobra.Command, args []string) error {
 
 	// Check for interactive mode
 	if listStatic || !terminal.IsInteractiveTerminal() {
-		return displayStaticList(todos)
+		return displayStaticList(todos, projectRoot, listDetails)
 	}
 
-	return runInteractiveList(todos, projectRoot)
+	return runInteractiveList(todos, projectRoot, listDetails)
 }
 
-func runInteractiveList(todos []types.Todo, projectRoot string) error {
+func runInteractiveList(todos []types.Todo, projectRoot string, detailsExpanded bool) error {
 	selectedIndex := 0
 	showDeleteConfirm := false
 	showDoneConfirm := false
@@ -155,7 +171,7 @@ func runInteractiveList(todos []types.Todo, projectRoot string) error {
 	// Set terminal to raw mode
 	termState, err := terminal.MakeRaw()
 	if err != nil {
-		return displayStaticList(todos)
+		return displayStaticList(todos, projectRoot, detailsExpanded)
 	}
 	defer termState.Restore()
 
@@ -176,7 +192,7 @@ func runInteractiveList(todos []types.Todo, projectRoot string) error {
 		} else if showDoneConfirm {
 			displayDoneConfirm(todos, selectedIndex)
 		} else {
-			displayInteractiveTodos(todos, selectedIndex)
+			displayInteractiveTodos(todos, projectRoot, selectedIndex, detailsExpanded)
 		}
 
 		key := terminal.ReadKey()
@@ -250,6 +266,12 @@ func runInteractiveList(todos []types.Todo, projectRoot string) error {
 				showDeleteConfirm = true
 			}
 
+		case "i", "I", "RIGHT":
+			detailsExpanded = !detailsExpanded
+
+		case "LEFT":
+			detailsExpanded = false
+
 		case "g":
 			selectedIndex = 0
 
@@ -263,7 +285,7 @@ func runInteractiveList(todos []types.Todo, projectRoot string) error {
 	}
 }
 
-func displayInteractiveTodos(todos []types.Todo, selectedIndex int) {
+func displayInteractiveTodos(todos []types.Todo, projectRoot string, selectedIndex int, detailsExpanded bool) {
 	terminal.Write(terminal.CursorHome + terminal.ClearScreen)
 	now := time.Now()
 
@@ -273,9 +295,10 @@ func displayInteractiveTodos(todos []types.Todo, selectedIndex int) {
 	terminal.WriteLine(fmt.Sprintf("  %s%s╰─────────────────────────────────────────────────────╯%s", terminal.Bold, terminal.BrightCyan, terminal.Reset))
 	terminal.WriteLine("")
 
-	terminal.WriteLine(fmt.Sprintf("  %s↑↓%s navigate  %s␣%s toggle  %sd%s delete  %sq%s quit  %s?%s help",
+	terminal.WriteLine(fmt.Sprintf("  %s↑↓%s navigate  %s␣%s toggle  %si%s info  %sd%s delete  %sq%s quit  %s?%s help",
 		terminal.Yellow+terminal.Bold, terminal.Reset+terminal.Dim,
 		terminal.Green+terminal.Bold, terminal.Reset+terminal.Dim,
+		terminal.Cyan+terminal.Bold, terminal.Reset+terminal.Dim,
 		terminal.Red+terminal.Bold, terminal.Reset+terminal.Dim,
 		terminal.BrightRed+terminal.Bold, terminal.Reset+terminal.Dim,
 		terminal.Cyan+terminal.Bold, terminal.Reset))
@@ -316,28 +339,20 @@ func displayInteractiveTodos(todos []types.Todo, selectedIndex int) {
 			}
 		}
 		text := terminal.Truncate(todo.Text, 50)
-		line += duePrefix + text + terminal.Reset
+		assigneePrefix := ""
+		if todo.Assignee != "" {
+			assigneePrefix = terminal.BrightMagenta + "@" + formatAssigneeLabel(projectRoot, todo.Assignee) + " " + terminal.Reset
+		}
+		line += assigneePrefix + duePrefix + text + terminal.Reset
 
 		terminal.WriteLine(line)
 
-		if isSelected && len(todo.Context.Paths) > 0 {
-			terminal.WriteLine(fmt.Sprintf("      %s📁 %s%s", terminal.Dim, strings.Join(todo.Context.Paths, ", "), terminal.Reset))
-		}
-		if isSelected && todo.Context.Branch != "" {
-			terminal.WriteLine(fmt.Sprintf("      %s🌿 %s%s", terminal.Dim, todo.Context.Branch, terminal.Reset))
-		}
-		if isSelected && todo.Notes != "" {
-			terminal.WriteLine(fmt.Sprintf("      %s📝 %s%s", terminal.Dim, terminal.Truncate(todo.Notes, 60), terminal.Reset))
-		}
-		if isSelected && len(todo.Tags) > 0 {
-			terminal.WriteLine(fmt.Sprintf("      %s🏷️ %s%s", terminal.Dim, strings.Join(todo.Tags, ", "), terminal.Reset))
-		}
-		if isSelected && todo.DueAt != nil {
-			color := terminal.Dim
-			if isOverdueDueDate(todo.DueAt, now) {
-				color = terminal.BrightRed
+		if isSelected {
+			if detailsExpanded {
+				writeTodoDetailLines(todo, projectRoot, "      ", now, true)
+			} else {
+				writeTodoSummaryLines(todo, projectRoot, now)
 			}
-			terminal.WriteLine(fmt.Sprintf("      %s⏳ %s%s", color, formatDueLabel(todo.DueAt, now), terminal.Reset))
 		}
 	}
 
@@ -362,6 +377,31 @@ func displayInteractiveTodos(todos []types.Todo, selectedIndex int) {
 	stats := countByStatus(todos)
 	terminal.WriteLine(fmt.Sprintf("  %s%s●%s %d open  %s●%s %d done%s",
 		terminal.Dim, terminal.Blue, terminal.Dim, stats["open"], terminal.Green, terminal.Dim, stats["done"], terminal.Reset))
+}
+
+func writeTodoSummaryLines(todo types.Todo, projectRoot string, now time.Time) {
+	if len(todo.Context.Paths) > 0 {
+		terminal.WriteLine(fmt.Sprintf("      %s📁 %s%s", terminal.Dim, strings.Join(todo.Context.Paths, ", "), terminal.Reset))
+	}
+	if todo.Context.Branch != "" {
+		terminal.WriteLine(fmt.Sprintf("      %s🌿 %s%s", terminal.Dim, todo.Context.Branch, terminal.Reset))
+	}
+	if todo.Notes != "" {
+		terminal.WriteLine(fmt.Sprintf("      %s📝 %s%s", terminal.Dim, terminal.Truncate(todo.Notes, 60), terminal.Reset))
+	}
+	if len(todo.Tags) > 0 {
+		terminal.WriteLine(fmt.Sprintf("      %s🏷️ %s%s", terminal.Dim, strings.Join(todo.Tags, ", "), terminal.Reset))
+	}
+	if todo.Assignee != "" {
+		terminal.WriteLine(fmt.Sprintf("      %s👤 %s%s", terminal.Dim, formatAssigneeLabel(projectRoot, todo.Assignee), terminal.Reset))
+	}
+	if todo.DueAt != nil {
+		color := terminal.Dim
+		if isOverdueDueDate(todo.DueAt, now) {
+			color = terminal.BrightRed
+		}
+		terminal.WriteLine(fmt.Sprintf("      %s⏳ %s%s", color, formatDueLabel(todo.DueAt, now), terminal.Reset))
+	}
 }
 
 func displayDeleteConfirm(todos []types.Todo, selectedIndex int) {
@@ -427,6 +467,8 @@ func displayHelp() {
 	terminal.WriteLine(fmt.Sprintf("  %sActions%s", terminal.Bold+terminal.Green, terminal.Reset))
 	terminal.WriteLine(fmt.Sprintf("  %s␣%s      Toggle todo status", terminal.Green+terminal.Bold, terminal.Reset))
 	terminal.WriteLine(fmt.Sprintf("  %sEnter%s  Toggle todo status", terminal.Green+terminal.Bold, terminal.Reset))
+	terminal.WriteLine(fmt.Sprintf("  %si%s      Expand/collapse selected todo details", terminal.Cyan+terminal.Bold, terminal.Reset))
+	terminal.WriteLine(fmt.Sprintf("  %s→%s/%s←%s    Expand/collapse selected todo details", terminal.Cyan+terminal.Bold, terminal.Reset, terminal.Cyan+terminal.Bold, terminal.Reset))
 	terminal.WriteLine(fmt.Sprintf("  %sd%s/%sx%s   Delete selected todo", terminal.Red+terminal.Bold, terminal.Reset, terminal.Red+terminal.Bold, terminal.Reset))
 	terminal.WriteLine("")
 
@@ -444,7 +486,7 @@ func displayHelp() {
 	terminal.WriteLine(fmt.Sprintf("  %sPress any key to continue...%s", terminal.Dim, terminal.Reset))
 }
 
-func displayStaticList(todos []types.Todo) error {
+func displayStaticList(todos []types.Todo, projectRoot string, details bool) error {
 	now := time.Now()
 	fmt.Printf("\n  %s%s📋 TODO LIST%s\n", terminal.Bold, terminal.BrightCyan, terminal.Reset)
 	fmt.Printf("  %s─────────────────────────────────────────%s\n\n", terminal.Dim, terminal.Reset)
@@ -459,30 +501,41 @@ func displayStaticList(todos []types.Todo) error {
 			textStyle = terminal.Dim
 		}
 
-		fmt.Printf("  %s%d.%s %s%s%s %s%s%s %s%s%s\n",
+		assigneePrefix := ""
+		if todo.Assignee != "" {
+			assigneePrefix = fmt.Sprintf("%s@%s %s", terminal.BrightMagenta, formatAssigneeLabel(projectRoot, todo.Assignee), terminal.Reset)
+		}
+		fmt.Printf("  %s%d.%s %s%s%s %s%s%s %s%s%s%s\n",
 			terminal.Dim, i+1, terminal.Reset,
 			statusColor, checkbox, terminal.Reset,
 			priorityColor, priorityLabel, terminal.Reset,
-			textStyle, todo.Text, terminal.Reset)
+			assigneePrefix, textStyle, todo.Text, terminal.Reset)
 
-		if todo.Notes != "" {
-			fmt.Printf("     %s📝 %s%s\n", terminal.Dim, terminal.Truncate(todo.Notes, 60), terminal.Reset)
-		}
-		if len(todo.Context.Paths) > 0 {
-			fmt.Printf("     %s📁 %s%s\n", terminal.Dim, strings.Join(todo.Context.Paths, ", "), terminal.Reset)
-		}
-		if todo.Context.Branch != "" {
-			fmt.Printf("     %s🌿 %s%s\n", terminal.Dim, todo.Context.Branch, terminal.Reset)
-		}
-		if len(todo.Tags) > 0 {
-			fmt.Printf("     %s🏷️ %s%s\n", terminal.Dim, strings.Join(todo.Tags, ", "), terminal.Reset)
-		}
-		if todo.DueAt != nil {
-			color := terminal.Dim
-			if isOverdueDueDate(todo.DueAt, now) {
-				color = terminal.BrightRed
+		if details {
+			writeTodoDetailLines(todo, projectRoot, "     ", now, false)
+		} else {
+			if todo.Notes != "" {
+				fmt.Printf("     %s📝 %s%s\n", terminal.Dim, terminal.Truncate(todo.Notes, 60), terminal.Reset)
 			}
-			fmt.Printf("     %s⏳ %s%s\n", color, formatDueLabel(todo.DueAt, now), terminal.Reset)
+			if len(todo.Context.Paths) > 0 {
+				fmt.Printf("     %s📁 %s%s\n", terminal.Dim, strings.Join(todo.Context.Paths, ", "), terminal.Reset)
+			}
+			if todo.Context.Branch != "" {
+				fmt.Printf("     %s🌿 %s%s\n", terminal.Dim, todo.Context.Branch, terminal.Reset)
+			}
+			if len(todo.Tags) > 0 {
+				fmt.Printf("     %s🏷️ %s%s\n", terminal.Dim, strings.Join(todo.Tags, ", "), terminal.Reset)
+			}
+			if todo.Assignee != "" {
+				fmt.Printf("     %s👤 %s%s\n", terminal.Dim, formatAssigneeLabel(projectRoot, todo.Assignee), terminal.Reset)
+			}
+			if todo.DueAt != nil {
+				color := terminal.Dim
+				if isOverdueDueDate(todo.DueAt, now) {
+					color = terminal.BrightRed
+				}
+				fmt.Printf("     %s⏳ %s%s\n", color, formatDueLabel(todo.DueAt, now), terminal.Reset)
+			}
 		}
 	}
 
@@ -494,6 +547,84 @@ func displayStaticList(todos []types.Todo) error {
 	fmt.Printf("  %s💡 Run 'todo ui' for web interface%s\n\n", terminal.Dim, terminal.Reset)
 
 	return nil
+}
+
+func writeTodoDetailLines(todo types.Todo, projectRoot string, indent string, now time.Time, useRawMode bool) {
+	write := func(line string) {
+		if useRawMode {
+			terminal.WriteLine(line)
+			return
+		}
+		fmt.Println(line)
+	}
+	writeDetail := func(label, value string) {
+		if strings.TrimSpace(value) == "" {
+			return
+		}
+		write(fmt.Sprintf("%s%s%s:%s %s", indent, terminal.Dim, label, terminal.Reset, value))
+	}
+	writeDate := func(label string, value time.Time) {
+		if value.IsZero() {
+			return
+		}
+		writeDetail(label, value.Format(time.RFC3339))
+	}
+
+	writeDetail("ID", todo.ID)
+	writeDetail("Text", todo.Text)
+	writeDetail("Status", string(todo.Status))
+	writeDetail("Priority", string(normalizePriority(todo.Priority)))
+	if todo.Notes != "" {
+		for i, line := range strings.Split(todo.Notes, "\n") {
+			if i == 0 {
+				writeDetail("Notes", line)
+			} else if strings.TrimSpace(line) != "" {
+				write(fmt.Sprintf("%s%s      %s%s", indent, terminal.Dim, line, terminal.Reset))
+			}
+		}
+	}
+	if len(todo.Tags) > 0 {
+		writeDetail("Tags", strings.Join(todo.Tags, ", "))
+	}
+	if todo.Assignee != "" {
+		writeDetail("Assignee", formatAssigneeLabel(projectRoot, todo.Assignee))
+	}
+	if todo.DueAt != nil {
+		color := terminal.Cyan
+		if isOverdueDueDate(todo.DueAt, now) {
+			color = terminal.BrightRed
+		}
+		writeDetail("Due", color+formatDueLabel(todo.DueAt, now)+terminal.Reset)
+	}
+	if todo.Recur != "" {
+		writeDetail("Recur", string(todo.Recur))
+	}
+	if len(todo.Context.Paths) > 0 {
+		writeDetail("Paths", strings.Join(todo.Context.Paths, ", "))
+	}
+	if todo.Context.Branch != "" {
+		writeDetail("Branch", todo.Context.Branch)
+	}
+	if todo.Context.Commit != "" {
+		writeDetail("Commit", todo.Context.Commit)
+	}
+	if len(todo.BlockedBy) > 0 {
+		writeDetail("Blocked by", strings.Join(todo.BlockedBy, ", "))
+	}
+	if len(todo.Blocks) > 0 {
+		writeDetail("Blocks", strings.Join(todo.Blocks, ", "))
+	}
+	if todo.Meta.Source != "" {
+		writeDetail("Source", todo.Meta.Source)
+	}
+	if todo.Meta.AIHint != "" {
+		writeDetail("AI hint", todo.Meta.AIHint)
+	}
+	writeDate("Created", todo.CreatedAt)
+	writeDate("Updated", todo.UpdatedAt)
+	if todo.CompletedAt != nil {
+		writeDate("Done", *todo.CompletedAt)
+	}
 }
 
 func countByStatus(todos []types.Todo) map[string]int {

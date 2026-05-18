@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/bagadi-alnour/todo-cli/internal/contributors"
 	"github.com/bagadi-alnour/todo-cli/internal/storage"
 	"github.com/bagadi-alnour/todo-cli/internal/types"
 )
@@ -37,6 +40,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/todos", s.handleTodos)
 	mux.HandleFunc("/api/todos/", s.handleTodoByID)
 	mux.HandleFunc("/api/project", s.handleProject)
+	mux.HandleFunc("/api/files", s.handleFiles)
+	mux.HandleFunc("/api/contributors", s.handleContributors)
 
 	return mux
 }
@@ -125,6 +130,114 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleFiles returns a project-relative directory listing for the path picker.
+func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+
+	if r.Method == http.MethodOptions {
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	dir, err := cleanProjectDir(r.URL.Query().Get("dir"))
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	absDir := filepath.Join(s.projectRoot, dir)
+	if !isInsideProject(s.projectRoot, absDir) {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "path is outside project"})
+		return
+	}
+
+	dirEntries, err := os.ReadDir(absDir)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	type fileEntry struct {
+		Name string `json:"name"`
+		Path string `json:"path"`
+		Type string `json:"type"`
+	}
+
+	entries := make([]fileEntry, 0, len(dirEntries))
+	for _, entry := range dirEntries {
+		name := entry.Name()
+		if shouldHideFilePickerEntry(name) {
+			continue
+		}
+		entryType := "file"
+		if entry.IsDir() {
+			entryType = "dir"
+		}
+		relPath := filepath.ToSlash(filepath.Join(dir, name))
+		entries = append(entries, fileEntry{Name: name, Path: relPath, Type: entryType})
+	}
+
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].Type != entries[j].Type {
+			return entries[i].Type == "dir"
+		}
+		return strings.ToLower(entries[i].Name) < strings.ToLower(entries[j].Name)
+	})
+
+	parent := ""
+	if dir != "" {
+		parent = filepath.Dir(dir)
+		if parent == "." {
+			parent = ""
+		}
+		parent = filepath.ToSlash(parent)
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"dir":     filepath.ToSlash(dir),
+		"parent":  parent,
+		"entries": entries,
+	})
+}
+
+// handleContributors returns cached git contributors for assignee pickers.
+func (s *Server) handleContributors(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+	if r.Method == http.MethodOptions {
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	refresh := r.URL.Query().Get("refresh") == "true"
+	var f *contributors.File
+	var err error
+	if refresh {
+		f, err = contributors.RefreshFromGit(s.projectRoot)
+	} else {
+		f, err = contributors.EnsureLoaded(s.projectRoot)
+	}
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	json.NewEncoder(w).Encode(f)
+}
+
 // listTodos returns all todos
 func (s *Server) listTodos(w http.ResponseWriter, r *http.Request) {
 	todos, err := storage.LoadTodos(s.projectRoot)
@@ -144,9 +257,11 @@ func (s *Server) createTodo(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Text     string   `json:"text"`
 		Path     *string  `json:"path"`
+		Paths    []string `json:"paths"`
 		Priority string   `json:"priority"`
 		Tags     []string `json:"tags"`
 		Due      *string  `json:"due"`
+		Assignee string   `json:"assignee"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -178,8 +293,18 @@ func (s *Server) createTodo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	todo := types.NewTodo(id, strings.TrimSpace(req.Text))
-	if req.Path != nil && *req.Path != "" {
-		todo.SetPaths([]string{*req.Path})
+	if err := storage.ApplyCreator(todo); err != nil {
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	paths, err := normalizeAPIPaths(s.projectRoot, req.Path, req.Paths)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	if len(paths) > 0 {
+		todo.SetPaths(paths)
 	}
 	if req.Priority != "" && priority.IsValid() {
 		todo.Priority = priority
@@ -196,6 +321,14 @@ func (s *Server) createTodo(w http.ResponseWriter, r *http.Request) {
 			}
 			todo.DueAt = dueAt
 		}
+	}
+	if req.Assignee != "" {
+		email, _, err := contributors.Resolve(s.projectRoot, req.Assignee)
+		if err != nil {
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		todo.Assignee = email
 	}
 
 	todos = append(todos, *todo)
@@ -238,9 +371,11 @@ func (s *Server) updateTodo(w http.ResponseWriter, r *http.Request, todoID strin
 		Text     string    `json:"text"`
 		Status   string    `json:"status"`
 		Path     *string   `json:"path"`
+		Paths    *[]string `json:"paths"`
 		Priority string    `json:"priority"`
 		Tags     *[]string `json:"tags"`
 		Due      *string   `json:"due"`
+		Assignee *string   `json:"assignee"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -288,19 +423,22 @@ func (s *Server) updateTodo(w http.ResponseWriter, r *http.Request, todoID strin
 		todos[idx].Priority = p
 	}
 	if req.Path != nil {
-		if *req.Path == "" {
-			todos[idx].Context.Paths = []string{}
-		} else {
-			paths := strings.Split(*req.Path, ",")
-			cleanPaths := []string{}
-			for _, p := range paths {
-				p = strings.TrimSpace(p)
-				if p != "" {
-					cleanPaths = append(cleanPaths, p)
-				}
-			}
-			todos[idx].Context.Paths = cleanPaths
+		paths, err := normalizeAPIPaths(s.projectRoot, req.Path, nil)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
 		}
+		todos[idx].Context.Paths = paths
+	}
+	if req.Paths != nil {
+		paths, err := normalizeAPIPaths(s.projectRoot, nil, *req.Paths)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		todos[idx].Context.Paths = paths
 	}
 	if req.Tags != nil {
 		todos[idx].Tags = normalizeAPITags(*req.Tags)
@@ -317,6 +455,18 @@ func (s *Server) updateTodo(w http.ResponseWriter, r *http.Request, todoID strin
 			todos[idx].DueAt = dueAt
 		}
 	}
+	if req.Assignee != nil {
+		if strings.TrimSpace(*req.Assignee) == "" {
+			todos[idx].Assignee = ""
+		} else {
+			email, _, err := contributors.Resolve(s.projectRoot, *req.Assignee)
+			if err != nil {
+				json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+				return
+			}
+			todos[idx].Assignee = email
+		}
+	}
 	todos[idx].UpdatedAt = time.Now()
 
 	if err := storage.SaveTodos(s.projectRoot, todos); err != nil {
@@ -325,6 +475,100 @@ func (s *Server) updateTodo(w http.ResponseWriter, r *http.Request, todoID strin
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "todo": todos[idx]})
+}
+
+func cleanProjectDir(dir string) (string, error) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" || dir == "." {
+		return "", nil
+	}
+	if filepath.IsAbs(dir) {
+		return "", fmt.Errorf("absolute paths are not allowed")
+	}
+	cleaned := filepath.Clean(filepath.FromSlash(dir))
+	if cleaned == "." {
+		return "", nil
+	}
+	if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("path is outside project")
+	}
+	return cleaned, nil
+}
+
+func isInsideProject(projectRoot, target string) bool {
+	rel, err := filepath.Rel(projectRoot, target)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
+}
+
+func shouldHideFilePickerEntry(name string) bool {
+	return name == ".git" || name == ".todos"
+}
+
+func normalizeAPIPaths(projectRoot string, path *string, paths []string) ([]string, error) {
+	raw := make([]string, 0, len(paths)+1)
+	if path != nil {
+		raw = append(raw, *path)
+	}
+	raw = append(raw, paths...)
+
+	seen := make(map[string]struct{}, len(raw))
+	out := make([]string, 0, len(raw))
+	for _, value := range raw {
+		for _, part := range strings.Split(value, ",") {
+			cleaned, err := cleanAPIPath(projectRoot, part)
+			if err != nil {
+				return nil, err
+			}
+			if cleaned == "" {
+				continue
+			}
+			if _, ok := seen[cleaned]; ok {
+				continue
+			}
+			seen[cleaned] = struct{}{}
+			out = append(out, cleaned)
+		}
+	}
+	return out, nil
+}
+
+func cleanAPIPath(projectRoot, raw string) (string, error) {
+	path := strings.TrimSpace(raw)
+	if path == "" {
+		return "", nil
+	}
+	projectRootAbs, err := filepath.Abs(projectRoot)
+	if err != nil {
+		projectRootAbs = filepath.Clean(projectRoot)
+	}
+	projectRootAbs = filepath.Clean(projectRootAbs)
+	path = filepath.FromSlash(path)
+	if filepath.IsAbs(path) {
+		pathAbs, err := filepath.Abs(path)
+		if err != nil {
+			return "", err
+		}
+		pathAbs = filepath.Clean(pathAbs)
+		if !isInsideProject(projectRootAbs, pathAbs) {
+			return "", fmt.Errorf("path must be inside the project root")
+		}
+		path, err = filepath.Rel(projectRootAbs, pathAbs)
+		if err != nil {
+			return "", err
+		}
+	} else {
+		path = filepath.Clean(path)
+		if path == ".." || strings.HasPrefix(path, ".."+string(os.PathSeparator)) {
+			return "", fmt.Errorf("path must be relative to the project root")
+		}
+	}
+	if path == "." {
+		return "", nil
+	}
+	return filepath.ToSlash(path), nil
 }
 
 func normalizeAPITags(tags []string) []string {
@@ -545,7 +789,19 @@ var indexHTML = `<!DOCTYPE html>
         }
         .add-form-label { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; color: var(--accent-green); font-size: 0.8rem; font-weight: 500; }
         .add-form-label::before { content: "$"; color: var(--accent-cyan); }
-        .add-form-row { display: flex; gap: 10px; }
+        .add-form-row { display: flex; gap: 10px; align-items: stretch; }
+        .add-form-row-primary { margin-bottom: 10px; }
+        .add-form-row-primary .add-input { flex: 1; min-width: 0; }
+        .add-form-row-primary .priority-input { flex: 0 0 160px; max-width: 160px; }
+        .add-form-row-meta {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(180px, 1fr) auto;
+            gap: 10px;
+            align-items: stretch;
+        }
+        .add-form-row-meta .path-picker-field { flex: none; min-width: 0; max-width: none; width: 100%; }
+        .add-form-row-meta .assignee-input { max-width: none; width: 100%; }
+        .add-form-row-meta .add-btn { align-self: stretch; white-space: nowrap; }
         .add-input {
             flex: 1;
             background: var(--bg-input);
@@ -559,7 +815,93 @@ var indexHTML = `<!DOCTYPE html>
         }
         .add-input:focus { outline: none; border-color: var(--border-focus); box-shadow: 0 0 0 2px var(--glow-green); }
         .add-input::placeholder { color: var(--text-muted); }
-        .path-input { max-width: 180px; }
+        .priority-input { max-width: 150px; }
+        .path-picker-field {
+            flex: 0 1 300px;
+            min-height: 42px;
+            background: var(--bg-input);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius);
+            padding: 6px 8px;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+            min-width: 220px;
+        }
+        .path-picker-field:hover { border-color: var(--text-secondary); }
+        .path-picker-field:focus-within { outline: none; border-color: var(--border-focus); box-shadow: 0 0 0 2px var(--glow-green); }
+        .path-chips {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            flex-wrap: wrap;
+            min-width: 0;
+            flex: 1;
+        }
+        .path-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            max-width: 160px;
+            padding: 3px 6px;
+            border: 1px solid rgba(191, 127, 255, 0.45);
+            border-radius: 3px;
+            color: var(--accent-purple);
+            background: rgba(191, 127, 255, 0.08);
+            font-size: 0.72rem;
+            line-height: 1.2;
+        }
+        .path-chip span {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .path-chip button,
+        .path-browse-btn {
+            border: 0;
+            background: transparent;
+            color: inherit;
+            font: inherit;
+            cursor: pointer;
+        }
+        .path-chip button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 14px;
+            height: 14px;
+            color: var(--text-secondary);
+        }
+        .path-chip button:hover { color: var(--accent-red); }
+        .path-entry-input {
+            flex: 1;
+            min-width: 72px;
+            border: 0;
+            background: transparent;
+            color: var(--text-primary);
+            font-family: inherit;
+            font-size: 0.85rem;
+            outline: none;
+            padding: 3px 0;
+            cursor: pointer;
+        }
+        .path-entry-input::placeholder { color: var(--text-muted); }
+        .path-browse-btn {
+            width: 28px;
+            height: 28px;
+            border: 1px solid var(--border-color);
+            border-radius: 3px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            color: var(--text-secondary);
+        }
+        .path-browse-btn:hover { border-color: var(--accent-purple); color: var(--accent-purple); background: rgba(191, 127, 255, 0.08); }
+        .path-browse-btn svg { width: 15px; height: 15px; }
         .add-btn {
             background: transparent;
             border: 1px solid var(--accent-green);
@@ -625,8 +967,7 @@ var indexHTML = `<!DOCTYPE html>
         }
         .todos-header span:first-child { width: 30px; }
         .todos-header span:nth-child(2) { flex: 1; }
-        .todos-header span:nth-child(3) { width: 80px; }
-        .todos-header span:last-child { width: 70px; }
+        .todos-header span:last-child { width: 96px; text-align: right; }
 
         /* Todo Item */
         .todo-item {
@@ -641,6 +982,9 @@ var indexHTML = `<!DOCTYPE html>
         .todo-item:last-child { border-bottom: none; }
         .todo-item:hover { background: var(--bg-hover); }
         .todo-item.selected { background: var(--glow-green); border-left: 2px solid var(--accent-green); padding-left: 14px; }
+        .todo-wrapper { border-bottom: 1px solid var(--border-color); }
+        .todo-wrapper:last-child { border-bottom: none; }
+        .todo-wrapper .todo-item { border-bottom: none; }
 
         .todo-index {
             width: 30px;
@@ -669,7 +1013,7 @@ var indexHTML = `<!DOCTYPE html>
         .todo-checkbox svg { width: 12px; height: 12px; opacity: 0; color: var(--bg-primary); stroke-width: 3; }
         .todo-item.done .todo-checkbox svg { opacity: 1; }
 
-        .todo-content { flex: 1; min-width: 0; }
+        .todo-content { flex: 1; min-width: 0; cursor: pointer; }
         .todo-text { font-size: 0.95rem; margin-bottom: 6px; word-wrap: break-word; line-height: 1.4; }
         .todo-item.done .todo-text { color: var(--text-muted); text-decoration: line-through; }
 
@@ -689,9 +1033,12 @@ var indexHTML = `<!DOCTYPE html>
         .todo-path::before { content: "📂"; font-size: 0.7rem; }
         .todo-branch { display: flex; align-items: center; gap: 4px; color: var(--accent-green); }
         .todo-branch::before { content: "⎇"; font-size: 0.8rem; }
+        .todo-assignee { display: flex; align-items: center; gap: 4px; color: var(--accent-purple); }
+        .todo-assignee::before { content: "@"; font-weight: 700; }
         .todo-date { color: var(--text-muted); }
+        .assignee-input { max-width: 180px; }
 
-        .todo-actions { display: flex; gap: 4px; opacity: 0; transition: opacity 0.15s; }
+        .todo-actions { display: flex; gap: 4px; margin-left: auto; opacity: 0; transition: opacity 0.15s; }
         .todo-item:hover .todo-actions { opacity: 1; }
 
         .action-btn {
@@ -710,6 +1057,49 @@ var indexHTML = `<!DOCTYPE html>
         .action-btn:hover { background: var(--bg-tertiary); color: var(--text-primary); border-color: var(--border-color); }
         .action-btn.delete:hover { background: rgba(255, 51, 102, 0.1); border-color: var(--accent-red); color: var(--accent-red); }
         .action-btn svg { width: 14px; height: 14px; }
+        .action-btn.details.expanded { color: var(--accent-cyan); border-color: var(--accent-cyan); background: var(--glow-cyan); }
+        .details-chevron { transition: transform 0.15s; }
+        .details-chevron.expanded { transform: rotate(90deg); }
+        .todo-details {
+            padding: 0 16px 16px 76px;
+            background: linear-gradient(90deg, transparent, var(--bg-secondary));
+        }
+        .todo-details-inner {
+            border-left: 2px solid var(--border-color);
+            padding: 10px 0 0 14px;
+        }
+        .todo-details-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+            gap: 8px 16px;
+        }
+        .todo-detail {
+            min-width: 0;
+            font-size: 0.76rem;
+            color: var(--text-secondary);
+        }
+        .todo-detail-label {
+            display: block;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-size: 0.62rem;
+            margin-bottom: 2px;
+        }
+        .todo-detail-value {
+            display: block;
+            color: var(--text-primary);
+            overflow-wrap: anywhere;
+        }
+        .todo-detail-note {
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }
 
         /* Modal */
         .modal-overlay {
@@ -733,6 +1123,7 @@ var indexHTML = `<!DOCTYPE html>
             margin: 20px;
             box-shadow: var(--shadow);
         }
+        .modal.path-modal { max-width: 620px; }
         .modal h2 { font-size: 1rem; margin-bottom: 20px; display: flex; align-items: center; gap: 8px; color: var(--accent-green); font-weight: 600; }
         .modal h2::before { content: ">"; color: var(--accent-cyan); }
         .modal-field { margin-bottom: 14px; }
@@ -748,6 +1139,9 @@ var indexHTML = `<!DOCTYPE html>
             font-family: inherit;
         }
         .modal-field input:focus, .modal-field select:focus { outline: none; border-color: var(--border-focus); }
+        .modal-field .path-picker-field { width: 100%; flex-basis: auto; }
+        .modal-field .path-entry-input { width: auto; background: transparent; border: 0; padding: 3px 0; }
+        .modal-field .path-entry-input:focus { border-color: transparent; }
         .modal-field select { cursor: pointer; }
         .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
         .btn { padding: 8px 18px; border-radius: var(--radius); font-weight: 500; cursor: pointer; transition: all 0.15s; font-family: inherit; font-size: 0.85rem; }
@@ -757,6 +1151,87 @@ var indexHTML = `<!DOCTYPE html>
         .btn-primary:hover { filter: brightness(1.1); }
         .btn-danger { background: var(--accent-red); border: 1px solid var(--accent-red); color: white; }
         .btn-danger:hover { filter: brightness(1.1); }
+        .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+        .path-modal-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+        .path-current-dir {
+            flex: 1;
+            min-width: 0;
+            padding: 8px 10px;
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius);
+            color: var(--text-secondary);
+            background: var(--bg-input);
+            font-size: 0.8rem;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .path-list {
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius);
+            overflow: hidden;
+            max-height: 360px;
+            overflow-y: auto;
+            background: var(--bg-input);
+        }
+        .path-list-empty {
+            padding: 24px;
+            color: var(--text-muted);
+            text-align: center;
+        }
+        .path-entry-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 10px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        .path-entry-row:last-child { border-bottom: none; }
+        .path-entry-row:hover { background: var(--bg-hover); }
+        .path-entry-select {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex: 1;
+            min-width: 0;
+            cursor: pointer;
+        }
+        .path-entry-select input { width: auto; }
+        .path-entry-name {
+            flex: 1;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: var(--text-primary);
+            font-size: 0.85rem;
+        }
+        .path-entry-type {
+            color: var(--text-muted);
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .path-open-dir {
+            width: 30px;
+            height: 28px;
+            border: 1px solid var(--border-color);
+            border-radius: 3px;
+            background: transparent;
+            color: var(--accent-cyan);
+            cursor: pointer;
+        }
+        .path-open-dir:hover { border-color: var(--accent-cyan); background: var(--glow-cyan); }
+        .path-selected-count {
+            margin-right: auto;
+            color: var(--text-muted);
+            font-size: 0.8rem;
+        }
 
         /* Empty State */
         .empty-state { text-align: center; padding: 50px 20px; color: var(--text-muted); }
@@ -814,11 +1289,14 @@ var indexHTML = `<!DOCTYPE html>
         @media (max-width: 640px) {
             .app { padding: 16px; }
             .header h1 { font-size: 1.1rem; }
-            .add-form-row { flex-direction: column; }
-            .path-input { max-width: 100%; }
+            .add-form-row-primary { flex-direction: column; }
+            .add-form-row-meta { grid-template-columns: 1fr; }
+            .priority-input { max-width: 100%; }
+            .path-picker-field { max-width: 100%; width: 100%; flex-basis: auto; }
             .stats-row { gap: 16px; }
             .stat { flex-direction: column; gap: 2px; }
             .todo-actions { opacity: 1; }
+            .todo-details { padding-left: 16px; }
             .todos-header { display: none; }
             .todo-index { display: none; }
             .theme-toggle { top: 10px; right: 10px; width: 38px; height: 38px; }
@@ -846,13 +1324,24 @@ var indexHTML = `<!DOCTYPE html>
 
         <div class="add-form">
             <div class="add-form-label">add_todo</div>
-            <div class="add-form-row">
+            <div class="add-form-row add-form-row-primary">
                 <input type="text" class="add-input" id="new-todo-text" placeholder="What needs to be done?" autocomplete="off" />
-                <input type="text" class="add-input path-input" id="new-todo-path" placeholder="path" autocomplete="off" />
-                <select class="add-input path-input" id="new-todo-priority">
+                <select class="add-input priority-input" id="new-todo-priority" title="Priority">
                     <option value="medium" selected>medium</option>
                     <option value="high">high</option>
                     <option value="low">low</option>
+                </select>
+            </div>
+            <div class="add-form-row add-form-row-meta">
+                <div class="path-picker-field" id="new-todo-path-field" onclick="openPathPicker('create')" role="button" tabindex="0" title="Select linked paths">
+                    <div class="path-chips" id="new-todo-path-chips"></div>
+                    <input type="text" class="path-entry-input" id="new-todo-path-input" placeholder="paths (optional)" autocomplete="off" />
+                    <button class="path-browse-btn" type="button" onclick="event.stopPropagation(); openPathPicker('create')" title="Browse paths">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7h5l2 2h11v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/><path d="M3 7V5a2 2 0 0 1 2-2h4l2 2h5a2 2 0 0 1 2 2"/></svg>
+                    </button>
+                </div>
+                <select class="add-input assignee-input" id="new-todo-assignee" title="Assignee">
+                    <option value="">assignee: none</option>
                 </select>
                 <button class="add-btn" onclick="addTodo()">+ add</button>
             </div>
@@ -871,13 +1360,15 @@ var indexHTML = `<!DOCTYPE html>
                 <option value="medium">medium</option>
                 <option value="low">low</option>
             </select>
+            <select id="assignee-filter" class="filter-select">
+                <option value="all">assignee: any</option>
+            </select>
         </div>
 
         <div class="todos-container">
             <div class="todos-header">
                 <span>#</span>
                 <span>task</span>
-                <span>status</span>
                 <span>actions</span>
             </div>
             <div id="todos"></div>
@@ -888,6 +1379,7 @@ var indexHTML = `<!DOCTYPE html>
             <div class="shortcuts-grid">
                 <div class="shortcut"><kbd>↑</kbd><kbd>↓</kbd> navigate</div>
                 <div class="shortcut"><kbd>space</kbd> toggle</div>
+                <div class="shortcut"><kbd>i</kbd> details</div>
                 <div class="shortcut"><kbd>e</kbd> edit</div>
                 <div class="shortcut"><kbd>d</kbd> delete</div>
                 <div class="shortcut"><kbd>n</kbd> new</div>
@@ -903,8 +1395,34 @@ var indexHTML = `<!DOCTYPE html>
             <div class="modal-field"><label>text</label><input type="text" id="edit-todo-text" /></div>
             <div class="modal-field"><label>status</label><select id="edit-todo-status"><option value="open">open</option><option value="done">done</option><option value="blocked">blocked</option><option value="waiting">waiting</option><option value="tech-debt">tech-debt</option></select></div>
             <div class="modal-field"><label>priority</label><select id="edit-todo-priority"><option value="high">high</option><option value="medium" selected>medium</option><option value="low">low</option></select></div>
-            <div class="modal-field"><label>path</label><input type="text" id="edit-todo-path" placeholder="optional" /></div>
+            <div class="modal-field"><label>assignee</label><select id="edit-todo-assignee"><option value="">unassigned</option></select></div>
+            <div class="modal-field">
+                <label>paths</label>
+                <div class="path-picker-field" id="edit-todo-path-field" onclick="openPathPicker('edit')" role="button" tabindex="0" title="Select linked paths">
+                    <div class="path-chips" id="edit-todo-path-chips"></div>
+                    <input type="text" class="path-entry-input" id="edit-todo-path-input" placeholder="optional" autocomplete="off" />
+                    <button class="path-browse-btn" type="button" onclick="event.stopPropagation(); openPathPicker('edit')" title="Browse paths">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7h5l2 2h11v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/><path d="M3 7V5a2 2 0 0 1 2-2h4l2 2h5a2 2 0 0 1 2 2"/></svg>
+                    </button>
+                </div>
+            </div>
             <div class="modal-actions"><button class="btn btn-secondary" onclick="closeEditModal()">cancel</button><button class="btn btn-primary" onclick="saveEdit()">save</button></div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="path-modal">
+        <div class="modal path-modal">
+            <h2>select_paths</h2>
+            <div class="path-modal-toolbar">
+                <button class="btn btn-secondary" id="path-parent-btn" onclick="goPathParent()">up</button>
+                <div class="path-current-dir" id="path-current-dir">/</div>
+            </div>
+            <div class="path-list" id="path-list"></div>
+            <div class="modal-actions">
+                <span class="path-selected-count" id="path-selected-count">0 selected</span>
+                <button class="btn btn-secondary" onclick="closePathModal()">cancel</button>
+                <button class="btn btn-primary" onclick="applyPathPicker()">add selected</button>
+            </div>
         </div>
     </div>
 
@@ -922,14 +1440,26 @@ var indexHTML = `<!DOCTYPE html>
     <script>
         let currentFilter = 'all';
         let currentPriorityFilter = 'all';
+        let currentAssigneeFilter = 'all';
+        let contributorList = [];
+        let contributorByEmail = {};
         let allTodos = [];
         let selectedIndex = -1;
         let currentTheme = localStorage.getItem('todo-theme') || 'dark';
+        let createPaths = [];
+        let editPaths = [];
+        let pathPickerTarget = 'create';
+        let pathPickerDir = '';
+        let pathPickerParent = '';
+        let pathPickerSelected = new Set();
+        let projectRootPath = '';
+        let expandedTodoIDs = new Set();
 
         document.addEventListener('DOMContentLoaded', () => {
             applyTheme(currentTheme);
             loadTodos();
             loadProjectInfo();
+            loadContributors();
             setupEventListeners();
         });
 
@@ -960,18 +1490,255 @@ var indexHTML = `<!DOCTYPE html>
                 selectedIndex = -1;
                 renderTodos();
             });
-            document.getElementById('new-todo-text').addEventListener('keypress', e => { if (e.key === 'Enter') addTodo(); });
-            document.addEventListener('keydown', handleKeyboard);
-            document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeEditModal(); closeDeleteModal(); } });
-            document.querySelectorAll('.modal-overlay').forEach(overlay => {
-                overlay.addEventListener('click', e => { if (e.target === overlay) { closeEditModal(); closeDeleteModal(); } });
+            document.getElementById('assignee-filter').addEventListener('change', e => {
+                currentAssigneeFilter = e.target.value;
+                selectedIndex = -1;
+                renderTodos();
             });
+            document.getElementById('new-todo-text').addEventListener('keypress', e => { if (e.key === 'Enter') addTodo(); });
+            setupPathControl('create');
+            setupPathControl('edit');
+            document.addEventListener('keydown', handleKeyboard);
+            document.addEventListener('keydown', e => {
+                if (e.key !== 'Escape') return;
+                if (document.getElementById('path-modal').classList.contains('active')) closePathModal();
+                else { closeEditModal(); closeDeleteModal(); }
+            });
+            document.querySelectorAll('.modal-overlay').forEach(overlay => {
+                overlay.addEventListener('click', e => {
+                    if (e.target !== overlay) return;
+                    if (overlay.id === 'path-modal') closePathModal();
+                    if (overlay.id === 'edit-modal') closeEditModal();
+                    if (overlay.id === 'delete-modal') closeDeleteModal();
+                });
+            });
+            renderPathChips('create');
+            renderPathChips('edit');
+        }
+
+        function setupPathControl(target) {
+            const input = document.getElementById(pathInputID(target));
+            const field = document.getElementById(pathFieldID(target));
+            input.addEventListener('keydown', e => handlePathInputKey(e, target));
+            input.addEventListener('blur', () => commitPathInput(target));
+            field.addEventListener('keydown', e => {
+                if (e.target === input) return;
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    openPathPicker(target);
+                }
+            });
+        }
+
+        function pathInputID(target) { return target === 'edit' ? 'edit-todo-path-input' : 'new-todo-path-input'; }
+        function pathFieldID(target) { return target === 'edit' ? 'edit-todo-path-field' : 'new-todo-path-field'; }
+        function pathChipsID(target) { return target === 'edit' ? 'edit-todo-path-chips' : 'new-todo-path-chips'; }
+        function getPaths(target) { return target === 'edit' ? editPaths : createPaths; }
+        function setPaths(target, paths) {
+            const normalized = normalizePathList(paths);
+            if (target === 'edit') editPaths = normalized;
+            else createPaths = normalized;
+            renderPathChips(target);
+        }
+
+        function renderPathChips(target) {
+            const paths = getPaths(target);
+            const chips = document.getElementById(pathChipsID(target));
+            const input = document.getElementById(pathInputID(target));
+            chips.innerHTML = paths.map((path, i) =>
+                '<span class="path-chip" title="' + escapeAttr(path) + '"><span>' + escapeHtml(path) + '</span><button type="button" onclick="event.stopPropagation(); removePath(\'' + target + '\', ' + i + ')" title="Remove path">×</button></span>'
+            ).join('');
+            input.placeholder = paths.length > 0 ? 'add path' : (target === 'edit' ? 'optional' : 'paths');
+        }
+
+        function handlePathInputKey(e, target) {
+            if (e.key === 'Enter' || e.key === ',') {
+                e.preventDefault();
+                commitPathInput(target);
+            } else if (e.key === 'Backspace' && e.target.value === '') {
+                const paths = getPaths(target).slice();
+                if (paths.length > 0) {
+                    paths.pop();
+                    setPaths(target, paths);
+                }
+            }
+        }
+
+        function commitPathInput(target) {
+            const input = document.getElementById(pathInputID(target));
+            const value = input.value;
+            if (!value.trim()) return;
+            setPaths(target, getPaths(target).concat(normalizePathList([value])));
+            input.value = '';
+        }
+
+        function removePath(target, index) {
+            const paths = getPaths(target).slice();
+            paths.splice(index, 1);
+            setPaths(target, paths);
+        }
+
+        function normalizePathList(values) {
+            const seen = new Set();
+            const out = [];
+            values.forEach(value => {
+                String(value || '').split(',').forEach(part => {
+                    let path = part.trim().replace(/^\.\/+/, '').replace(/\\/g, '/');
+                    path = path.replace(/\/+/g, '/');
+                    path = makeProjectRelativePath(path);
+                    if (!path || seen.has(path)) return;
+                    seen.add(path);
+                    out.push(path);
+                });
+            });
+            return out;
+        }
+
+        function normalizeRootPath(path) {
+            return String(path || '').trim().replace(/\\/g, '/').replace(/\/+$/, '');
+        }
+
+        function makeProjectRelativePath(path) {
+            const root = projectRootPath;
+            if (!root) return path;
+            if (path === root) return '';
+            if (path.startsWith(root + '/')) return path.slice(root.length + 1);
+            return path;
+        }
+
+        async function openPathPicker(target) {
+            commitPathInput(target);
+            pathPickerTarget = target;
+            pathPickerSelected = new Set(getPaths(target));
+            pathPickerDir = '';
+            pathPickerParent = '';
+            document.getElementById('path-modal').classList.add('active');
+            await loadPathEntries('');
+        }
+
+        function closePathModal() {
+            document.getElementById('path-modal').classList.remove('active');
+        }
+
+        async function loadPathEntries(dir) {
+            try {
+                const res = await fetch('/api/files?dir=' + encodeURIComponent(dir || ''));
+                const data = await res.json();
+                if (!res.ok || data.error) throw new Error(data.error || 'Failed');
+                pathPickerDir = data.dir || '';
+                pathPickerParent = data.parent || '';
+                renderPathEntries(data.entries || []);
+            } catch (err) {
+                showToast('Failed to load paths', 'error');
+            }
+        }
+
+        function renderPathEntries(entries) {
+            document.getElementById('path-current-dir').textContent = pathPickerDir ? '/' + pathPickerDir : '/';
+            document.getElementById('path-parent-btn').disabled = !pathPickerDir;
+            updatePathSelectedCount();
+            if (entries.length === 0) {
+                document.getElementById('path-list').innerHTML = '<div class="path-list-empty">No files in this folder</div>';
+                return;
+            }
+            document.getElementById('path-list').innerHTML = entries.map(entry => {
+                const checked = pathPickerSelected.has(entry.path) ? ' checked' : '';
+                const icon = entry.type === 'dir' ? '▸' : '';
+                const openButton = entry.type === 'dir'
+                    ? '<button class="path-open-dir" type="button" onclick="loadPathEntries(\'' + jsString(entry.path) + '\')" title="Open folder">' + icon + '</button>'
+                    : '<span class="path-open-dir" style="visibility:hidden"></span>';
+                return '<div class="path-entry-row">' +
+                    '<label class="path-entry-select">' +
+                    '<input type="checkbox"' + checked + ' onchange="togglePathPickerSelection(\'' + jsString(entry.path) + '\')" />' +
+                    '<span class="path-entry-name" title="' + escapeAttr(entry.path) + '">' + escapeHtml(entry.name) + '</span>' +
+                    '<span class="path-entry-type">' + entry.type + '</span>' +
+                    '</label>' +
+                    openButton +
+                    '</div>';
+            }).join('');
+        }
+
+        function togglePathPickerSelection(path) {
+            if (pathPickerSelected.has(path)) pathPickerSelected.delete(path);
+            else pathPickerSelected.add(path);
+            updatePathSelectedCount();
+        }
+
+        function updatePathSelectedCount() {
+            const count = pathPickerSelected.size;
+            document.getElementById('path-selected-count').textContent = count + ' selected';
+        }
+
+        function goPathParent() {
+            if (pathPickerDir) loadPathEntries(pathPickerParent);
+        }
+
+        function applyPathPicker() {
+            setPaths(pathPickerTarget, Array.from(pathPickerSelected));
+            closePathModal();
+        }
+
+
+        async function loadContributors() {
+            try {
+                const res = await fetch('/api/contributors');
+                const data = await res.json();
+                if (!res.ok || data.error) throw new Error(data.error || 'Failed');
+                contributorList = data.contributors || [];
+                contributorByEmail = {};
+                contributorList.forEach(c => { contributorByEmail[(c.email || '').toLowerCase()] = c; });
+                populateAssigneeSelects();
+                populateAssigneeFilter();
+            } catch (err) {
+                console.warn('contributors', err);
+            }
+        }
+
+        function contributorLabel(email) {
+            if (!email) return '';
+            const c = contributorByEmail[(email || '').toLowerCase()];
+            if (!c) return email;
+            return c.name && c.name !== c.email ? c.name : c.email;
+        }
+
+        function populateAssigneeSelects() {
+            const options = '<option value="">unassigned</option>' + contributorList.map(c => {
+                const label = c.name && c.name !== c.email ? c.name : c.email;
+                return '<option value="' + escapeAttr(c.email) + '">' + escapeHtml(label) + '</option>';
+            }).join('');
+            ['new-todo-assignee', 'edit-todo-assignee'].forEach(id => {
+                const el = document.getElementById(id);
+                if (!el) return;
+                const prev = el.value;
+                el.innerHTML = id === 'new-todo-assignee'
+                    ? '<option value="">assignee: none</option>' + contributorList.map(c => {
+                        const label = c.name && c.name !== c.email ? c.name : c.email;
+                        return '<option value="' + escapeAttr(c.email) + '">' + escapeHtml(label) + '</option>';
+                    }).join('')
+                    : options;
+                if (prev) el.value = prev;
+            });
+        }
+
+        function populateAssigneeFilter() {
+            const select = document.getElementById('assignee-filter');
+            if (!select) return;
+            const emails = new Set();
+            allTodos.forEach(t => { if (t.assignee) emails.add(t.assignee.toLowerCase()); });
+            const assigned = Array.from(emails).sort();
+            select.innerHTML = '<option value="all">assignee: any</option>' +
+                assigned.map(email => '<option value="' + escapeAttr(email) + '">@' + escapeHtml(contributorLabel(email)) + '</option>').join('');
+            if (currentAssigneeFilter !== 'all' && !assigned.includes(currentAssigneeFilter)) {
+                currentAssigneeFilter = 'all';
+            }
+            select.value = currentAssigneeFilter;
         }
 
         async function loadProjectInfo() {
             try {
                 const res = await fetch('/api/project');
                 const data = await res.json();
+                projectRootPath = normalizeRootPath(data.path || '');
                 document.getElementById('project-name').textContent = data.name || 'project';
             } catch (err) { document.getElementById('project-name').textContent = 'project'; }
         }
@@ -981,7 +1748,10 @@ var indexHTML = `<!DOCTYPE html>
                 const res = await fetch('/api/todos');
                 const data = await res.json();
                 allTodos = data.todos || [];
+                const activeIDs = new Set(allTodos.map(t => t.id));
+                expandedTodoIDs = new Set(Array.from(expandedTodoIDs).filter(id => activeIDs.has(id)));
                 renderStats();
+                populateAssigneeFilter();
                 renderTodos();
             } catch (err) { showToast('Failed to load todos', 'error'); }
         }
@@ -1000,16 +1770,18 @@ var indexHTML = `<!DOCTYPE html>
 
         function getFilteredTodos() {
             let filtered = allTodos.slice();
-            if (currentFilter !== 'all') filtered = filtered.filter(t => t.status === currentFilter);
+            if (currentFilter === 'all') filtered = filtered.filter(t => t.status !== 'done');
+            else if (currentFilter !== 'all') filtered = filtered.filter(t => t.status === currentFilter);
             if (currentPriorityFilter !== 'all') filtered = filtered.filter(t => normalizePriority(t.priority) === currentPriorityFilter);
+            if (currentAssigneeFilter !== 'all') filtered = filtered.filter(t => (t.assignee || '').toLowerCase() === currentAssigneeFilter);
             return sortByPriority(filtered);
         }
 
         function sortByPriority(todos) {
             return todos.slice().sort((a, b) => {
-                const diff = priorityWeight(b.priority) - priorityWeight(a.priority);
-                if (diff !== 0) return diff;
-                return new Date(a.createdAt) - new Date(b.createdAt);
+                const dateDiff = new Date(b.createdAt) - new Date(a.createdAt);
+                if (dateDiff !== 0) return dateDiff;
+                return priorityWeight(b.priority) - priorityWeight(a.priority);
             });
         }
 
@@ -1020,7 +1792,7 @@ var indexHTML = `<!DOCTYPE html>
 
         function renderTodos() {
             const filtered = getFilteredTodos();
-            const hasFilters = currentFilter !== 'all' || currentPriorityFilter !== 'all';
+            const hasFilters = currentFilter !== 'all' || currentPriorityFilter !== 'all' || currentAssigneeFilter !== 'all';
             if (filtered.length === 0) {
                 document.getElementById('todos').innerHTML = '<div class="empty-state"><div class="icon">◇</div><h3>No todos</h3><p>' + (hasFilters ? 'Try a different filter' : 'Add your first todo above') + '</p></div>';
                 return;
@@ -1028,36 +1800,90 @@ var indexHTML = `<!DOCTYPE html>
             document.getElementById('todos').innerHTML = filtered.map((todo, i) => {
                 const isDone = todo.status === 'done';
                 const isSelected = i === selectedIndex;
+                const isExpanded = expandedTodoIDs.has(todo.id);
                 const paths = todo.context?.paths || [];
                 const branch = todo.context?.branch || '';
                 const priority = priorityMeta(todo.priority);
-                return '<div class="todo-item' + (isDone ? ' done' : '') + (isSelected ? ' selected' : '') + '" data-id="' + todo.id + '" data-index="' + i + '">' +
+                const idArg = jsString(todo.id);
+                return '<div class="todo-wrapper" data-id="' + escapeAttr(todo.id) + '">' +
+                    '<div class="todo-item' + (isDone ? ' done' : '') + (isSelected ? ' selected' : '') + '" data-id="' + escapeAttr(todo.id) + '" data-index="' + i + '">' +
                     '<span class="todo-index">' + String(i + 1).padStart(2, '0') + '</span>' +
-                    '<div class="todo-checkbox" onclick="toggleTodo(\'' + todo.id + '\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="20 6 9 17 4 12"/></svg></div>' +
-                    '<div class="todo-content"><div class="todo-text">' + escapeHtml(todo.text) + '</div><div class="todo-meta">' +
+                    '<div class="todo-checkbox" onclick="toggleTodo(\'' + idArg + '\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="20 6 9 17 4 12"/></svg></div>' +
+                    '<div class="todo-content" onclick="toggleTodoDetails(\'' + idArg + '\')" title="' + (isExpanded ? 'Hide details' : 'Show details') + '"><div class="todo-text">' + escapeHtml(todo.text) + '</div><div class="todo-meta">' +
                     '<span class="todo-status status-' + todo.status + '">' + todo.status + '</span>' +
                     '<span class="todo-priority priority-' + priority.key + '">' + priority.label + '</span>' +
                     '<span class="todo-date">' + formatDate(todo.createdAt) + '</span>' +
-                    (paths.length > 0 ? '<span class="todo-path">' + escapeHtml(paths[0]) + '</span>' : '') +
+                    (paths.length > 0 ? '<span class="todo-path" title="' + escapeAttr(paths.join(', ')) + '">' + escapeHtml(formatPathSummary(paths)) + '</span>' : '') +
                     (branch ? '<span class="todo-branch">' + escapeHtml(branch) + '</span>' : '') +
+                    (todo.assignee ? '<span class="todo-assignee" title="' + escapeAttr(todo.assignee) + '">' + escapeHtml(contributorLabel(todo.assignee)) + '</span>' : '') +
                     '</div></div>' +
                     '<div class="todo-actions">' +
-                    '<button class="action-btn" onclick="openEditModal(\'' + todo.id + '\')" title="Edit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>' +
-                    '<button class="action-btn delete" onclick="openDeleteModal(\'' + todo.id + '\')" title="Delete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>' +
-                    '</div></div>';
+                    '<button class="action-btn details' + (isExpanded ? ' expanded' : '') + '" onclick="toggleTodoDetails(\'' + idArg + '\')" title="' + (isExpanded ? 'Hide details' : 'Show details') + '"><svg class="details-chevron' + (isExpanded ? ' expanded' : '') + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg></button>' +
+                    '<button class="action-btn" onclick="openEditModal(\'' + idArg + '\')" title="Edit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>' +
+                    '<button class="action-btn delete" onclick="openDeleteModal(\'' + idArg + '\')" title="Delete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>' +
+                    '</div></div>' +
+                    (isExpanded ? renderTodoDetails(todo) : '') +
+                    '</div>';
             }).join('');
         }
 
+        function toggleTodoDetails(id) {
+            if (expandedTodoIDs.has(id)) expandedTodoIDs.delete(id);
+            else expandedTodoIDs.add(id);
+            renderTodos();
+        }
+
+        function renderTodoDetails(todo) {
+            const fields = [
+                detailField('id', todo.id),
+                detailField('text', todo.text),
+                detailField('status', todo.status),
+                detailField('priority', normalizePriority(todo.priority)),
+                detailField('created', formatDateTime(todo.createdAt)),
+                detailField('updated', formatDateTime(todo.updatedAt))
+            ];
+            if (todo.completedAt) fields.push(detailField('done', formatDateTime(todo.completedAt)));
+            if (todo.dueAt) fields.push(detailField('due', formatDateTime(todo.dueAt)));
+            if (todo.recur) fields.push(detailField('recur', todo.recur));
+            if (todo.assignee) fields.push(detailField('assignee', contributorLabel(todo.assignee)));
+            if (todo.tags?.length) fields.push(detailField('tags', todo.tags.join(', ')));
+            if (todo.context?.paths?.length) fields.push(detailField('paths', todo.context.paths.join(', ')));
+            if (todo.context?.branch) fields.push(detailField('branch', todo.context.branch));
+            if (todo.context?.commit) fields.push(detailField('commit', todo.context.commit));
+            if (todo.blockedBy?.length) fields.push(detailField('blocked by', todo.blockedBy.join(', ')));
+            if (todo.blocks?.length) fields.push(detailField('blocks', todo.blocks.join(', ')));
+            if (todo.meta?.source) fields.push(detailField('source', todo.meta.source));
+            if (todo.meta?.aiHint) fields.push(detailField('ai hint', todo.meta.aiHint));
+            const notes = todo.notes
+                ? '<div class="todo-detail-note"><span class="todo-detail-label">notes</span>' + escapeHtml(todo.notes) + '</div>'
+                : '';
+            return '<div class="todo-details"><div class="todo-details-inner"><div class="todo-details-grid">' + fields.join('') + '</div>' + notes + '</div></div>';
+        }
+
+        function detailField(label, value) {
+            return '<div class="todo-detail"><span class="todo-detail-label">' + escapeHtml(label) + '</span><span class="todo-detail-value">' + escapeHtml(value || '') + '</span></div>';
+        }
+
         async function addTodo() {
+            commitPathInput('create');
             const text = document.getElementById('new-todo-text').value.trim();
-            const path = document.getElementById('new-todo-path').value.trim();
+            const paths = createPaths.slice();
             const priority = document.getElementById('new-todo-priority').value;
+            const assignee = document.getElementById('new-todo-assignee').value;
             if (!text) { showToast('Enter a todo', 'error'); return; }
             try {
-                const res = await fetch('/api/todos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, path: path || null, priority }) });
-                if (res.ok) { document.getElementById('new-todo-text').value = ''; document.getElementById('new-todo-path').value = ''; document.getElementById('new-todo-priority').value = 'medium'; await loadTodos(); showToast('Added', 'success'); }
-                else throw new Error('Failed');
-            } catch (err) { showToast('Failed to add', 'error'); }
+                const payload = { text, paths, priority };
+                if (assignee) payload.assignee = assignee;
+                const res = await fetch('/api/todos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                const data = await readAPIResponse(res);
+                if (!res.ok || data.error) throw new Error(data.error || 'Failed to add');
+                document.getElementById('new-todo-text').value = '';
+                setPaths('create', []);
+                document.getElementById('new-todo-priority').value = 'medium';
+                document.getElementById('new-todo-assignee').value = '';
+                await loadTodos();
+                showToast('Added', 'success');
+            } catch (err) { showToast(err.message || 'Failed to add', 'error'); }
         }
 
         async function toggleTodo(id) { try { await fetch('/api/todos/' + id + '/toggle', { method: 'POST' }); await loadTodos(); } catch (err) { showToast('Toggle failed', 'error'); } }
@@ -1069,7 +1895,8 @@ var indexHTML = `<!DOCTYPE html>
             document.getElementById('edit-todo-text').value = todo.text;
             document.getElementById('edit-todo-status').value = todo.status;
             document.getElementById('edit-todo-priority').value = normalizePriority(todo.priority);
-            document.getElementById('edit-todo-path').value = (todo.context?.paths || []).join(', ');
+            setPaths('edit', todo.context?.paths || []);
+            document.getElementById('edit-todo-assignee').value = todo.assignee || '';
             document.getElementById('edit-modal').classList.add('active');
             setTimeout(() => document.getElementById('edit-todo-text').focus(), 100);
         }
@@ -1077,16 +1904,22 @@ var indexHTML = `<!DOCTYPE html>
         function closeEditModal() { document.getElementById('edit-modal').classList.remove('active'); }
 
         async function saveEdit() {
+            commitPathInput('edit');
             const id = document.getElementById('edit-todo-id').value;
             const text = document.getElementById('edit-todo-text').value.trim();
             const status = document.getElementById('edit-todo-status').value;
             const priority = document.getElementById('edit-todo-priority').value;
-            const path = document.getElementById('edit-todo-path').value.trim();
+            const paths = editPaths.slice();
             if (!text) { showToast('Text required', 'error'); return; }
             try {
-                const res = await fetch('/api/todos/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, status, priority, path: path || null }) });
-                if (res.ok) { closeEditModal(); await loadTodos(); showToast('Updated', 'success'); } else throw new Error('Failed');
-            } catch (err) { showToast('Update failed', 'error'); }
+                const assignee = document.getElementById('edit-todo-assignee').value;
+                const res = await fetch('/api/todos/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, status, priority, paths, assignee }) });
+                const data = await readAPIResponse(res);
+                if (!res.ok || data.error) throw new Error(data.error || 'Update failed');
+                closeEditModal();
+                await loadTodos();
+                showToast('Updated', 'success');
+            } catch (err) { showToast(err.message || 'Update failed', 'error'); }
         }
 
         function openDeleteModal(id) { document.getElementById('delete-todo-id').value = id; document.getElementById('delete-modal').classList.add('active'); }
@@ -1109,6 +1942,7 @@ var indexHTML = `<!DOCTYPE html>
                 case 'ArrowDown': case 'j': e.preventDefault(); selectedIndex = Math.min(selectedIndex + 1, filtered.length - 1); renderTodos(); scrollToSelected(); break;
                 case 'ArrowUp': case 'k': e.preventDefault(); selectedIndex = Math.max(selectedIndex - 1, 0); renderTodos(); scrollToSelected(); break;
                 case ' ': case 'Enter': e.preventDefault(); if (selectedIndex >= 0 && selectedIndex < filtered.length) toggleTodo(filtered[selectedIndex].id); break;
+                case 'i': case 'I': if (selectedIndex >= 0 && selectedIndex < filtered.length) toggleTodoDetails(filtered[selectedIndex].id); break;
                 case 'e': case 'E': if (selectedIndex >= 0 && selectedIndex < filtered.length) openEditModal(filtered[selectedIndex].id); break;
                 case 'd': case 'D': if (selectedIndex >= 0 && selectedIndex < filtered.length) openDeleteModal(filtered[selectedIndex].id); break;
                 case 'n': case 'N': document.getElementById('new-todo-text').focus(); break;
@@ -1118,7 +1952,12 @@ var indexHTML = `<!DOCTYPE html>
 
         function scrollToSelected() { const selected = document.querySelector('.todo-item.selected'); if (selected) selected.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
         function formatDate(dateStr) { const d = new Date(dateStr); return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); }
+        function formatDateTime(dateStr) { const d = new Date(dateStr); return d.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' }); }
+        function formatPathSummary(paths) { if (paths.length <= 2) return paths.join(', '); return paths[0] + ' +' + (paths.length - 1); }
         function escapeHtml(text) { const div = document.createElement('div'); div.textContent = text; return div.innerHTML; }
+        function escapeAttr(text) { return escapeHtml(text).replace(/"/g, '&quot;'); }
+        function jsString(text) { return String(text).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '\\r'); }
+        async function readAPIResponse(res) { try { return await res.json(); } catch (err) { return {}; } }
         function normalizePriority(priority) { const p = (priority || 'medium').toString().toLowerCase(); return ['high', 'medium', 'low'].includes(p) ? p : 'medium'; }
         function priorityWeight(priority) { const p = normalizePriority(priority); if (p === 'high') return 3; if (p === 'low') return 1; return 2; }
         function showToast(message, type = 'success') { const toast = document.getElementById('toast'); toast.className = 'toast ' + type + ' show'; document.getElementById('toast-message').textContent = message; setTimeout(() => toast.classList.remove('show'), 2500); }

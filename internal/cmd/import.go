@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/bagadi-alnour/todo-cli/internal/storage"
 	"github.com/bagadi-alnour/todo-cli/internal/terminal"
@@ -66,12 +67,20 @@ func runImport(cmd *cobra.Command, args []string) error {
 			idSet[t.ID] = struct{}{}
 		}
 
+		creator, err := storage.CurrentUserSlug()
+		if err != nil {
+			return err
+		}
+
 		added := 0
 		skipped := 0
 		for _, t := range incoming {
 			if _, dup := idSet[t.ID]; dup {
 				skipped++
 				continue
+			}
+			if strings.TrimSpace(t.CreatedBy) == "" {
+				t.CreatedBy = creator
 			}
 			existing = append(existing, t)
 			idSet[t.ID] = struct{}{}

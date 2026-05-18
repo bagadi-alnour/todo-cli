@@ -24,6 +24,7 @@ var (
 	addBlockedBy []string
 	addBlocks    []string
 	addRecur     string
+	addAssign    string
 )
 
 var addCmd = &cobra.Command{
@@ -55,10 +56,12 @@ func init() {
 	addCmd.Flags().StringArrayVar(&addBlockedBy, "blocked-by", []string{}, "IDs of todos that block this one")
 	addCmd.Flags().StringArrayVar(&addBlocks, "blocks", []string{}, "IDs of todos that this one blocks")
 	addCmd.Flags().StringVar(&addRecur, "recur", "", "Recurrence when completed: daily, weekly, monthly")
+	addCmd.Flags().StringVar(&addAssign, "assign", "", "Assign to a git contributor (name, email prefix, or me)")
 	addCmd.Flags().BoolVar(&addJSON, "json", false, "Output the created todo as JSON")
 
 	// Project-aware path completion
 	registerPathFlagCompletion(addCmd, "path")
+	registerAssigneeFlagCompletion(addCmd, "assign")
 }
 
 func runAdd(cmd *cobra.Command, args []string) error {
@@ -126,6 +129,10 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		todo = types.NewTodo(id, text)
 		todo.Priority = priority
 
+		if err := storage.ApplyCreator(todo); err != nil {
+			return err
+		}
+
 		normalizedPaths := normalizePaths(addPaths)
 		if len(normalizedPaths) > 0 {
 			todo.SetPaths(normalizedPaths)
@@ -144,6 +151,14 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		}
 		if len(addBlocks) > 0 {
 			todo.Blocks = addBlocks
+		}
+
+		if cmd.Flags().Changed("assign") {
+			email, err := resolveAssignee(projectRoot, addAssign)
+			if err != nil {
+				return err
+			}
+			todo.Assignee = email
 		}
 
 		if !addNoGit && config.AutoGit && git.IsGitRepo() {
@@ -185,7 +200,11 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	if todo.Context.Commit != "" {
 		fmt.Printf("  %s📝 Commit: %s%s\n", terminal.Dim, todo.Context.Commit, terminal.Reset)
 	}
+	if todo.Assignee != "" {
+		fmt.Printf("  %s👤 Assignee: %s%s\n", terminal.Dim, formatAssigneeLabel(projectRoot, todo.Assignee), terminal.Reset)
+	}
 	fmt.Printf("  %s🆔 ID: %s%s\n", terminal.Dim, todo.ID[:8], terminal.Reset)
+	printAssigneeHint(projectRoot, todo.Context.Paths)
 	fmt.Println()
 
 	return nil

@@ -19,7 +19,7 @@ var initCmd = &cobra.Command{
 	Long: `Initialize a new todo project in the current directory.
 
 This creates a .todos/ directory containing:
-  - todos.json: The todo list storage file
+  - users/: Per-creator todo files (firstname-lastname.json from git user.name)
   - config.json: Project-specific configuration
 
 The .todos/ directory can be committed to version control
@@ -51,7 +51,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	terminal.PrintSuccess("Todo project initialized!")
 	fmt.Println()
 	fmt.Printf("  %sCreated:%s\n", terminal.Dim, terminal.Reset)
-	fmt.Printf("    %s.todos/todos.json%s  - Todo storage\n", terminal.BrightCyan, terminal.Reset)
+	fmt.Printf("    %s.todos/users/<firstname-lastname>.json%s  - Per-creator todo files\n", terminal.BrightCyan, terminal.Reset)
 	fmt.Printf("    %s.todos/config.json%s - Configuration\n", terminal.BrightCyan, terminal.Reset)
 	fmt.Println()
 	fmt.Printf("  %sLocation:%s %s\n", terminal.Dim, terminal.Reset, projectPath)

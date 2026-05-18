@@ -1,0 +1,4 @@
+# Recommended when committing .todos/ in application repos (copy or merge into your project).
+.todos/users/*.json merge=union
+.todos/archive.json merge=union
+.todos/contributors.json merge=union

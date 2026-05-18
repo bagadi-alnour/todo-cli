@@ -23,6 +23,7 @@ func spawnRecurrence(completed types.Todo) (*types.Todo, error) {
 	next.Recur = completed.Recur
 	next.BlockedBy = completed.BlockedBy
 	next.Blocks = completed.Blocks
+	next.CreatedBy = completed.CreatedBy
 
 	base := time.Now()
 	if completed.DueAt != nil {

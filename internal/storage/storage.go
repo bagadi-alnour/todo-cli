@@ -103,10 +103,9 @@ func InitProject(path string, force bool) (string, error) {
 		return "", fmt.Errorf("failed to create .todos directory: %w", err)
 	}
 
-	// Create empty todos.json
-	todoFile := types.NewTodoFile()
-	if err := saveTodoFile(absPath, todoFile); err != nil {
-		return "", err
+	// Create users directory for per-creator todo files.
+	if err := ensureUsersDir(absPath); err != nil {
+		return "", fmt.Errorf("failed to create users directory: %w", err)
 	}
 
 	// Create default config.json
@@ -128,40 +127,18 @@ func GetConfigPath(projectRoot string) string {
 	return filepath.Join(projectRoot, TodosDir, ConfigFile)
 }
 
-// LoadTodos loads todos from the project's todos.json file
+// LoadTodos loads and merges todos from .todos/users/*.json (migrating legacy todos.json once).
 func LoadTodos(projectRoot string) ([]types.Todo, error) {
-	todosPath := GetTodosPath(projectRoot)
-
-	data, err := os.ReadFile(todosPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return []types.Todo{}, nil
-		}
-		return nil, fmt.Errorf("failed to read todos file: %w", err)
+	if err := migrateLegacyTodos(projectRoot); err != nil {
+		return nil, err
 	}
-
-	var todoFile types.TodoFile
-	if err := json.Unmarshal(data, &todoFile); err != nil {
-		// Try legacy format (just array of todos)
-		var todos []types.Todo
-		if err := json.Unmarshal(data, &todos); err != nil {
-			return nil, fmt.Errorf("failed to parse todos file: %w", err)
-		}
-		normalizeTodos(todos)
-		return todos, nil
-	}
-
-	normalizeTodos(todoFile.Todos)
-	return todoFile.Todos, nil
+	return loadAllUserTodos(projectRoot)
 }
 
-// SaveTodos saves todos to the project's todos.json file
+// SaveTodos persists todos into per-creator files under .todos/users/<firstname-lastname>.json.
 func SaveTodos(projectRoot string, todos []types.Todo) error {
-	todoFile := &types.TodoFile{
-		Version: 1,
-		Todos:   todos,
-	}
-	return saveTodoFile(projectRoot, todoFile)
+	normalizeTodos(todos)
+	return saveTodosByOwner(projectRoot, todos)
 }
 
 // atomicWriteFile writes data to a temp file in the same directory, fsyncs
@@ -403,6 +380,31 @@ func FilterTodosByTag(todos []types.Todo, tag string) []types.Todo {
 	return filtered
 }
 
+// FilterTodosByAssignee filters todos assigned to any of the given emails (normalized lowercase).
+func FilterTodosByAssignee(todos []types.Todo, emails []string) []types.Todo {
+	if len(emails) == 0 {
+		return []types.Todo{}
+	}
+	want := make(map[string]struct{}, len(emails))
+	for _, email := range emails {
+		email = strings.ToLower(strings.TrimSpace(email))
+		if email != "" {
+			want[email] = struct{}{}
+		}
+	}
+	if len(want) == 0 {
+		return []types.Todo{}
+	}
+	var filtered []types.Todo
+	for _, t := range todos {
+		email := strings.ToLower(strings.TrimSpace(t.Assignee))
+		if _, ok := want[email]; ok {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
+}
+
 // FilterTodosByTags filters todos that match at least one provided tag (OR semantics).
 func FilterTodosByTags(todos []types.Todo, tags []string) []types.Todo {
 	tagSet := make(map[string]struct{}, len(tags))
@@ -482,6 +484,8 @@ func normalizeTodos(todos []types.Todo) {
 			todos[i].Priority = types.PriorityMedium
 		}
 		todos[i].Tags = normalizeTags(todos[i].Tags)
+		todos[i].Assignee = strings.ToLower(strings.TrimSpace(todos[i].Assignee))
+		todos[i].CreatedBy = normalizeOwnerSlug(todos[i].CreatedBy)
 		// Keep completion timestamp consistent with status for mixed historical data.
 		if todos[i].Status == types.StatusDone && todos[i].CompletedAt == nil {
 			completedAt := todos[i].UpdatedAt

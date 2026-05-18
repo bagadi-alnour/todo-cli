@@ -149,6 +149,9 @@ func runScan(cmd *cobra.Command, args []string) error {
 				continue
 			}
 			todo := types.NewTodo(id, r.Text)
+			if err := storage.ApplyCreator(todo); err != nil {
+				return err
+			}
 			todo.SetPaths([]string{r.File})
 			todo.Meta.Source = "scan"
 			if scanTag != "" {

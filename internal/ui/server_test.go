@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -30,7 +32,7 @@ func TestServerCRUD(t *testing.T) {
 	defer ts.Close()
 
 	// Create
-	createBody := `{"text":"first","path":"src","priority":"high","tags":["api","backend"],"due":"2026-02-20"}`
+	createBody := `{"text":"first","paths":["src","README.md"],"priority":"high","tags":["api","backend"],"due":"2026-02-20"}`
 	resp, err := http.Post(ts.URL+"/api/todos", "application/json", strings.NewReader(createBody))
 	if err != nil {
 		t.Fatalf("create todo request failed: %v", err)
@@ -62,6 +64,9 @@ func TestServerCRUD(t *testing.T) {
 	if createResp.Todo.DueAt == nil {
 		t.Fatalf("expected due date to be set")
 	}
+	if got := createResp.Todo.Context.Paths; len(got) != 2 || got[0] != "src" || got[1] != "README.md" {
+		t.Fatalf("expected paths [src README.md], got %+v", got)
+	}
 
 	// List
 	resp, err = http.Get(ts.URL + "/api/todos")
@@ -85,7 +90,7 @@ func TestServerCRUD(t *testing.T) {
 	updatePayload := map[string]any{
 		"status":   "blocked",
 		"priority": "low",
-		"path":     "docs",
+		"paths":    []string{"docs", "internal/ui"},
 		"tags":     []string{"ops"},
 		"due":      "",
 	}
@@ -115,6 +120,9 @@ func TestServerCRUD(t *testing.T) {
 	if updateResp.Todo.DueAt != nil {
 		t.Fatalf("expected due date cleared, got %+v", updateResp.Todo.DueAt)
 	}
+	if got := updateResp.Todo.Context.Paths; len(got) != 2 || got[0] != "docs" || got[1] != "internal/ui" {
+		t.Fatalf("expected updated paths [docs internal/ui], got %+v", got)
+	}
 
 	// Toggle
 	resp, err = http.Post(ts.URL+"/api/todos/"+todoID+"/toggle", "application/json", nil)
@@ -141,5 +149,148 @@ func TestServerCRUD(t *testing.T) {
 	}
 	if listResp.Count != 0 {
 		t.Fatalf("expected 0 todos after delete, got %d", listResp.Count)
+	}
+}
+
+func TestServerFiles(t *testing.T) {
+	projectRoot := t.TempDir()
+	if _, err := storage.InitProject(projectRoot, true); err != nil {
+		t.Fatalf("init project: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(projectRoot, "src", "ui"), 0755); err != nil {
+		t.Fatalf("create test dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("readme"), 0644); err != nil {
+		t.Fatalf("create readme: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, "src", "app.go"), []byte("package src\n"), 0644); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	server := NewServer(projectRoot, 0)
+	req := httptest.NewRequest(http.MethodGet, "/api/files", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var rootResp struct {
+		Dir     string `json:"dir"`
+		Parent  string `json:"parent"`
+		Entries []struct {
+			Name string `json:"name"`
+			Path string `json:"path"`
+			Type string `json:"type"`
+		} `json:"entries"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&rootResp); err != nil {
+		t.Fatalf("decode files response: %v", err)
+	}
+	if rootResp.Dir != "" || rootResp.Parent != "" {
+		t.Fatalf("unexpected root metadata: %+v", rootResp)
+	}
+	if len(rootResp.Entries) != 2 {
+		t.Fatalf("expected visible root entries [src README.md], got %+v", rootResp.Entries)
+	}
+	if rootResp.Entries[0].Name != "src" || rootResp.Entries[0].Type != "dir" {
+		t.Fatalf("expected src directory first, got %+v", rootResp.Entries)
+	}
+	if rootResp.Entries[1].Name != "README.md" || rootResp.Entries[1].Type != "file" {
+		t.Fatalf("expected README.md file second, got %+v", rootResp.Entries)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/files?dir=src", nil)
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status OK for src, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var srcResp struct {
+		Dir     string `json:"dir"`
+		Parent  string `json:"parent"`
+		Entries []struct {
+			Name string `json:"name"`
+			Path string `json:"path"`
+			Type string `json:"type"`
+		} `json:"entries"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&srcResp); err != nil {
+		t.Fatalf("decode src files response: %v", err)
+	}
+	if srcResp.Dir != "src" || srcResp.Parent != "" {
+		t.Fatalf("unexpected src metadata: %+v", srcResp)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/files?dir=..", nil)
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status bad request for traversal, got %d", rec.Code)
+	}
+}
+
+func TestServerPathsStayProjectRelative(t *testing.T) {
+	projectRoot := t.TempDir()
+	if _, err := storage.InitProject(projectRoot, true); err != nil {
+		t.Fatalf("init project: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(projectRoot, "src"), 0755); err != nil {
+		t.Fatalf("create src dir: %v", err)
+	}
+	projectFile := filepath.Join(projectRoot, "src", "app.go")
+	if err := os.WriteFile(projectFile, []byte("package src\n"), 0644); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	server := NewServer(projectRoot, 0)
+	createPayload := map[string]any{
+		"text":  "relative path",
+		"paths": []string{projectFile},
+	}
+	createBytes, _ := json.Marshal(createPayload)
+	req := httptest.NewRequest(http.MethodPost, "/api/todos", bytes.NewReader(createBytes))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected create status OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var createResp struct {
+		Todo types.Todo `json:"todo"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&createResp); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	if got := createResp.Todo.Context.Paths; len(got) != 1 || got[0] != "src/app.go" {
+		t.Fatalf("expected project-relative path src/app.go, got %+v", got)
+	}
+
+	outsideFile := filepath.Join(t.TempDir(), "outside.go")
+	badPayload := map[string]any{
+		"text":  "outside path",
+		"paths": []string{outsideFile},
+	}
+	badBytes, _ := json.Marshal(badPayload)
+	req = httptest.NewRequest(http.MethodPost, "/api/todos", bytes.NewReader(badBytes))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected bad request for outside absolute path, got %d", rec.Code)
+	}
+
+	traversalPayload := map[string]any{
+		"text":  "traversal path",
+		"paths": []string{"../outside.go"},
+	}
+	traversalBytes, _ := json.Marshal(traversalPayload)
+	req = httptest.NewRequest(http.MethodPost, "/api/todos", bytes.NewReader(traversalBytes))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected bad request for path traversal, got %d", rec.Code)
 	}
 }

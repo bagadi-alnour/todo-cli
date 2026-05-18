@@ -31,6 +31,8 @@ var (
 	editClearBlocks    bool
 	editRecur          string
 	editClearRecur     bool
+	editAssign         string
+	editClearAssignee  bool
 )
 
 var editCmd = &cobra.Command{
@@ -65,8 +67,11 @@ func init() {
 	editCmd.Flags().BoolVar(&editClearBlocks, "clear-blocks", false, "Remove all blocks")
 	editCmd.Flags().StringVar(&editRecur, "recur", "", "Set recurrence: daily, weekly, monthly")
 	editCmd.Flags().BoolVar(&editClearRecur, "clear-recur", false, "Remove recurrence")
+	editCmd.Flags().StringVar(&editAssign, "assign", "", "Assign to a git contributor (name, email prefix, or me)")
+	editCmd.Flags().BoolVar(&editClearAssignee, "clear-assignee", false, "Remove assignee")
 
 	registerPathFlagCompletion(editCmd, "path")
+	registerAssigneeFlagCompletion(editCmd, "assign")
 }
 
 func runEdit(cmd *cobra.Command, args []string) error {
@@ -75,6 +80,9 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	}
 	if editClearNotes && cmd.Flags().Changed("notes") {
 		return fmt.Errorf("cannot use --notes with --clear-notes")
+	}
+	if editClearAssignee && cmd.Flags().Changed("assign") {
+		return fmt.Errorf("cannot use --assign with --clear-assignee")
 	}
 
 	projectRoot, err := storage.FindProjectRoot(".")
@@ -202,8 +210,20 @@ func runEdit(cmd *cobra.Command, args []string) error {
 			updated = true
 		}
 
+		if editClearAssignee {
+			todos[idx].Assignee = ""
+			updated = true
+		} else if cmd.Flags().Changed("assign") {
+			email, err := resolveAssignee(projectRoot, editAssign)
+			if err != nil {
+				return err
+			}
+			todos[idx].Assignee = email
+			updated = true
+		}
+
 		if !updated {
-			return fmt.Errorf("no updates provided; use --text, --status, --priority, --path, --tag, --due, --notes, --blocked-by, --blocks, --recur, or clear flags")
+			return fmt.Errorf("no updates provided; use --text, --status, --priority, --path, --tag, --due, --notes, --blocked-by, --blocks, --recur, --assign, or clear flags")
 		}
 
 		todos[idx].UpdatedAt = time.Now()
